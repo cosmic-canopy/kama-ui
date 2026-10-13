@@ -1,0 +1,15 @@
+// @kama/ui's tests: one program, built twice — natively (tools/test.sh, debug and release, through @kama/rmlui) and for
+// the browser (tools/test-web.sh, emcc, run in a headless browser). The rewriter and the pad's presses are pure and run
+// on both; the seam suite runs the same checks against whichever `UiContext` this build has. A failing case prints its
+// name; the last line counts them.
+
+import { Tally, uidocTests, navTests, seamTests, report };
+
+fn int32 main()
+{
+    Tally t = Tally.zero();
+    uidocTests(t: t);
+    navTests(t: t);
+    seamTests(t: t);
+    return report(t: t);
+}

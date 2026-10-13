@@ -1,0 +1,96 @@
+// ui::nav — a pad's d-pad and stick as the menus' arrow keys.
+//
+// From the-mallow-man's ui/src/nav.kama (E7b, 2026-10-07; new there, not in friendly-fire-department), unchanged but
+// for the key codes, which now live in types.kama with the rest of the seam's keys.
+//
+// friendly-fire-department's web leg moved its focus ring for a pad in JavaScript; its native leg had only the
+// keyboard's arrows. Here both legs get it the simplest way there is: RmlUi (and kama_ui_web.js, by document order)
+// already move focus on the arrow keys, so a pad only has to PRESS arrow keys — once on a push, then on a repeat while
+// held — and A is ENTER. What a document wraps or skips is the document's to say (`nav-up`/`nav-down` on its ends), the
+// same on every input device.
+//
+// THIS FILE IS THE PRESSING: four direction levels in (0..1 — the stick's and the d-pad's, whichever is stronger, read
+// through the program's own bindings), one key code out per frame or 0. Pure, so a suite can drive it.
+//
+// - **Hysteresis**: a direction starts at UI_NAV_ON and holds until it falls under UI_NAV_OFF, so a stick resting at
+//   the edge of its dead zone neither flickers nor repeats.
+// - **One direction at a time**: the held one keeps priority while it is held; otherwise the strongest wins. A
+//   diagonal therefore moves one way and keeps moving that way, which is what a list wants.
+// - **Repeat**: the first press at once, the second after UI_NAV_DELAY_S, then every UI_NAV_REPEAT_S — a held stick
+//   walks a list at a readable pace; at most one press a frame, so a hitch never jumps the ring three rows.
+
+import { UI_KEY_UP, UI_KEY_DOWN, UI_KEY_LEFT, UI_KEY_RIGHT };
+export { UiNav, UI_NAV_ON, UI_NAV_OFF, UI_NAV_DELAY_S, UI_NAV_REPEAT_S };
+
+comptime float32 UI_NAV_ON = 0.55;
+comptime float32 UI_NAV_OFF = 0.35;
+comptime float32 UI_NAV_DELAY_S = 0.40;
+comptime float32 UI_NAV_REPEAT_S = 0.12;
+
+type value UiNav {
+    int32 held;          // the arrow held now, or 0
+    float32 heldFor;     // seconds it has been held
+    float32 nextAt;      // when (in heldFor) it presses again
+
+    public ctor fresh()
+    {
+        this.held = 0;
+        this.heldFor = 0.0;
+        this.nextAt = 0.0;
+    }
+
+    // Let go of everything (a screen opened or closed): the next push is a first press.
+    public fn void reset()
+    {
+        this.held = 0;
+        this.heldFor = 0.0;
+        this.nextAt = 0.0;
+    }
+
+    public const fn int32 holding() { return this.held; }
+
+    // This frame's levels and its length. The arrow to press now, or 0.
+    public fn int32 step(float32 up, float32 down, float32 left, float32 right, float32 dt)
+    {
+        int32 want = 0;
+        if (this.held != 0 && levelOf(key: this.held, up: up, down: down, left: left, right: right) >= UI_NAV_OFF) {
+            want = this.held;
+        } else {
+            // The strongest past UI_NAV_ON; a tie goes to the earlier of up, down, left, right.
+            float32 best = 0.0;
+            if (up >= UI_NAV_ON && up > best) { want = UI_KEY_UP; best = up; }
+            if (down >= UI_NAV_ON && down > best) { want = UI_KEY_DOWN; best = down; }
+            if (left >= UI_NAV_ON && left > best) { want = UI_KEY_LEFT; best = left; }
+            if (right >= UI_NAV_ON && right > best) { want = UI_KEY_RIGHT; best = right; }
+        }
+        if (want == 0) {
+            this.reset();
+            return 0;
+        }
+        if (want != this.held) {
+            this.held = want;
+            this.heldFor = 0.0;
+            this.nextAt = UI_NAV_DELAY_S;
+            return want;
+        }
+        float32 step = dt;
+        if (step < 0.0) { step = 0.0; }
+        this.heldFor = this.heldFor + step;
+        if (this.heldFor >= this.nextAt) {
+            this.nextAt = this.nextAt + UI_NAV_REPEAT_S;
+            // A hitch longer than a repeat presses once, not once per repeat it covered.
+            if (this.nextAt < this.heldFor) { this.nextAt = this.heldFor + UI_NAV_REPEAT_S; }
+            return want;
+        }
+        return 0;
+    }
+}
+
+fn float32 levelOf(int32 key, float32 up, float32 down, float32 left, float32 right)
+{
+    if (key == UI_KEY_UP) { return up; }
+    if (key == UI_KEY_DOWN) { return down; }
+    if (key == UI_KEY_LEFT) { return left; }
+    if (key == UI_KEY_RIGHT) { return right; }
+    return 0.0;
+}

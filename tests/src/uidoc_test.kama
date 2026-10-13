@@ -1,0 +1,207 @@
+// The RML -> HTML rewriter (ui::uidoc), on every leg — natively and in the browser, with nothing on disk.
+//
+// From friendly-fire-department's tests/src/uidoc_test.kama (M4 slice 5), ported to this harness; the image section
+// changed with the rule (see src/uidoc/rml.kama). The checks a reasonable person would not think to write, and each
+// guards a decision:
+//
+//   - **The `dp` NEGATIVES matter more than the positives.** A blind `replace("dp", "px")` passes every positive check
+//     here and silently renames `#dpad` and `dpi`. Half this suite is inputs that must come out UNCHANGED.
+//   - **A CSS comment may contain a brace**, and the rule splitter is naive by design: there is a fixture whose comment
+//     contains `{` and `}`.
+//   - **The scrollbar mapping is ordered longest-first**: both are asserted, and asserted to be DIFFERENT.
+//   - **The reset must stay at zero specificity**: every reset line is a `:where(...)`.
+
+import { Tally, check, section, ui::uidoc::rmlToHtml, ui::uidoc::escapeText };
+export { uidocTests };
+
+// A whole minimal document, so the head/body split is exercised by the real entry point rather than
+// by reaching past it. The head comment contains a `<style>`-looking string on purpose: the splitter
+// takes the FIRST `<style>`, and a comment that mentions one must not be mistaken for it.
+fn string tinyDoc()
+{
+    return "<rml>\n<head>\n<title>t</title>\n<!-- a note about <style> in prose -->\n<style>\nbody { font-size: 15dp; }\n</style>\n</head>\n\n<body>\n<div id=\"card\">HI</div>\n</body>\n</rml>\n";
+}
+
+// ⚠️ **THE ONE SUITE IN THIS FILE THAT IS ABOUT SAFETY RATHER THAN APPEARANCE.** Everything else here
+// asks whether a screen looks right on both legs. This asks whether a string another PLAYER typed can
+// leave the text it was written into — which natively is a mangled screen and on the web, where
+// `setInnerRml` reaches `innerHTML`, is script injection.
+fn void checkEscaping(ref Tally t)
+{
+    section(what: "uidoc / text that did not come from us");
+
+    // ---- the four, and only the four ----
+    //
+    // ⚠️ The set is RmlUi's own `EncodeRml`, character for character, so neither leg escapes something
+    // the other would not. A fifth would be a difference between the two, in the one file whose job
+    // is that there is no difference.
+    string lt = escapeText(raw: "a<b");
+    check(t: t, ok: lt == "a&lt;b", what: "< becomes &lt;");
+    string gt = escapeText(raw: "a>b");
+    check(t: t, ok: gt == "a&gt;b", what: "> becomes &gt;");
+    string amp = escapeText(raw: "a&b");
+    check(t: t, ok: amp == "a&amp;b", what: "& becomes &amp;");
+    string quot = escapeText(raw: "a\"b");
+    check(t: t, ok: quot == "a&quot;b", what: "\" becomes &quot;");
+
+    // ⚠️ **`'` IS A STATED LIMIT, NOT AN OVERSIGHT**, and it is pinned so that "fixing" it is a
+    // deliberate act rather than a tidy-up. RmlUi does not escape it, and it is structural in neither
+    // a text node nor a double-quoted attribute — the only kind this tree writes.
+    string apos = escapeText(raw: "it's");
+    check(t: t, ok: apos == "it's", what: "' is left alone, matching RmlUi — a single-quoted attribute would need more");
+
+    // ---- the ampersand goes first, or the escaping escapes itself ----
+    //
+    // ⚠️ **THE CLASSIC WAY TO GET THIS WRONG** is to replace `<` before `&`, so `&lt;` becomes
+    // `&amp;lt;` and the text shows the entity instead of the character. One pass over the bytes
+    // cannot make that mistake, and this is what says so.
+    string already = escapeText(raw: "&lt;");
+    check(t: t, ok: already == "&amp;lt;", what: "an existing entity is escaped ONCE — no double-escaping, and no decoding either");
+
+    // ---- the shapes an attacker actually sends ----
+    string script = escapeText(raw: "<script>alert(1)</script>");
+    check(t: t, ok: !script.contains(substring: "<script>"), what: "a script tag cannot survive as markup");
+    check(t: t, ok: script.contains(substring: "&lt;script&gt;"), what: "...it survives as TEXT, which is what a player typing it should see");
+    string breakOut = escapeText(raw: "x\"><img src=x onerror=alert(1)>");
+    check(t: t, ok: !breakOut.contains(substring: "\">") && !breakOut.contains(substring: "<img"), what: "an attribute break-out cannot close the quote OR open a tag");
+
+    // ---- and everything else is untouched, byte for byte ----
+    string plain = escapeText(raw: "Marcus");
+    check(t: t, ok: plain == "Marcus", what: "an ordinary name is unchanged");
+    string empty = escapeText(raw: "");
+    check(t: t, ok: empty == "", what: "an empty string is unchanged");
+
+    // ⚠️ **UTF-8 SURVIVES, AND THIS IS THE CHECK THAT SAYS THE BYTE-WISE SCAN IS SAFE.** Every byte of
+    // a multi-byte sequence is >= 0x80 and so can never equal one of the four ASCII bytes — but a
+    // name in a non-Latin script is exactly what `lobbyClampName`'s own fixture exists for, so the
+    // claim is pinned rather than reasoned.
+    string kanji = escapeText(raw: "こんにちは");
+    check(t: t, ok: kanji == "こんにちは", what: "a name in kanji passes through byte-identical — the scan cannot split a codepoint");
+    string mixed = escapeText(raw: "こ<b>ん");
+    check(t: t, ok: mixed == "こ&lt;b&gt;ん", what: "...and mixed text escapes only the ASCII specials around it");
+}
+
+fn void uidocTests(ref Tally t)
+{
+    checkEscaping(t: t);
+
+    section(what: "uidoc / the head and body are lifted, the rest is dropped");
+
+    string doc = tinyDoc();
+    string html = rmlToHtml(rml: ref doc);
+
+    check(t: t, ok: html.contains(substring: "<div id=\"card\">HI</div>"), what: "the body markup survives verbatim");
+    check(t: t, ok: !html.contains(substring: "<title>"), what: "...and the head's <title> does not come with it");
+    check(t: t, ok: !html.contains(substring: "a note about"), what: "...nor the head comment, which mentions <style> to bait the splitter");
+    check(t: t, ok: !html.contains(substring: "<rml>"), what: "...and the <rml> root is gone — the result is a FRAGMENT for innerHTML");
+    check(t: t, ok: html.startsWith(prefix: "<style>"), what: "the style block leads, so one assignment carries the rules and the markup together");
+
+    section(what: "uidoc / the reset is emitted, and at zero specificity");
+
+    check(t: t, ok: html.contains(substring: ":where(#ui-root,#ui-root *)"), what: "the element reset is there");
+    check(t: t, ok: html.contains(substring: "border-style:solid"), what: "...and it supplies the border-style RCSS does not have, or every border draws nothing");
+    check(t: t, ok: html.contains(substring: "border-width:0"), what: "...WITH a zero width beside it, or `solid` alone gives everything a 3px medium border");
+    check(t: t, ok: html.contains(substring: "display:inline"), what: "...and defaults display to inline, which is what RmlUi's absent stylesheet does");
+    check(t: t, ok: !html.contains(substring: "\n#ui-root,#ui-root *{"), what: "no reset rule is emitted OUTSIDE a :where() — one that a document cannot override is a bug");
+
+    // ⚠️ THE RULE THAT PUTS `style` BACK, AND IT IS HERE BECAUSE A SCREENSHOT FOUND IT RATHER THAN A
+    // CHECK. Defaulting everything to `display: inline` also catches the `<style>` element this
+    // function emits, and the UA rule that hides it is precisely what has been overridden — so the
+    // whole stylesheet renders as visible text above the screen. Every structural assertion in
+    // `tools/check-web` passed while it did.
+    check(t: t, ok: html.contains(substring: ":where(#ui-root style,"), what: "...and `style` is hidden again — the reset's own display:inline would otherwise SHOW the stylesheet");
+
+    // ⚠️ THE FIFTH DISAGREEMENT, AND `currentColor` IS THE HALF WORTH PINNING. A form control is
+    // painted by the browser itself, so RmlUi's `slidertrack`/`sliderbar` rules reach nothing there
+    // and a range draws in the browser's own accent — stock Chrome blue in a teal game. This one
+    // declaration hands it the DOCUMENT's colour instead. Asserting `currentColor` rather than just
+    // `accent-color` is the point: a literal colour here would put a game's palette inside a generic
+    // document rewriter, which is the mistake this check exists to prevent somebody making later.
+    check(t: t, ok: html.contains(substring: "accent-color:currentColor"), what: "a form control's accent follows the document's own colour — the browser paints it, so nothing else can");
+    check(t: t, ok: !html.contains(substring: "accent-color:#"), what: "...and the reset names NO colour of its own — a palette in the rewriter is a second source of truth");
+
+    section(what: "uidoc / dp becomes px where it is a UNIT");
+
+    string units = rmlToHtml(rml: ref doc);
+    check(t: t, ok: units.contains(substring: "font-size: 15px;"), what: "15dp -> 15px");
+
+    string frac = wrap(css: "a { font-size: 12.5dp; padding: 10dp 14dp 0dp 2dp; }");
+    string fracOut = rmlToHtml(rml: ref frac);
+    check(t: t, ok: fracOut.contains(substring: "font-size: 12.5px;"), what: "a fractional size converts — the receipt's slips are 12.5dp");
+    check(t: t, ok: fracOut.contains(substring: "padding: 10px 14px 0px 2px;"), what: "...and every value in a four-value shorthand, not just the first");
+
+    section(what: "uidoc / ...and NOWHERE ELSE, which is the half that can silently break a screen");
+
+    string neg = wrap(css: "#dpad { color: red; } .dp { color: red; } b { width: 12dpi; } i { x: adp; }");
+    string negOut = rmlToHtml(rml: ref neg);
+    check(t: t, ok: negOut.contains(substring: "#dpad"), what: "#dpad is untouched — the `dp` is not preceded by a digit");
+    check(t: t, ok: negOut.contains(substring: "#ui-root .dp{"), what: "...so is a class literally named .dp");
+    check(t: t, ok: negOut.contains(substring: "12dpi"), what: "12dpi is untouched — the `dp` IS preceded by a digit, and followed by more identifier");
+    check(t: t, ok: negOut.contains(substring: "adp"), what: "...and `adp` at the end of a value, where there is no digit in front");
+    check(t: t, ok: !negOut.contains(substring: "#px"), what: "nothing anywhere in the negatives was rewritten");
+
+    section(what: "uidoc / every selector is scoped, so a document cannot restyle the page");
+
+    string sel = wrap(css: "h1, h2, p, div { display: block; } body { color: #fff; } .a .b { color: red; }");
+    string selOut = rmlToHtml(rml: ref sel);
+    check(t: t, ok: selOut.contains(substring: "#ui-root h1,#ui-root h2,#ui-root p,#ui-root div"), what: "a comma list is scoped ENTRY BY ENTRY — prefixing the list once would scope only the first");
+    check(t: t, ok: selOut.contains(substring: "\n#ui-root{"), what: "`body` becomes #ui-root ITSELF, not a descendant of it");
+    check(t: t, ok: !selOut.contains(substring: "#ui-root body"), what: "...so no rule is left aimed at a <body> that the fragment does not contain");
+    check(t: t, ok: selOut.contains(substring: "#ui-root .a .b"), what: "a descendant selector keeps its shape");
+
+    section(what: "uidoc / RmlUi's scrollbar elements become the browser's pseudo-elements");
+
+    // Copied from receipt.rml, which is the only document that scrolls. Longest first in the SOURCE
+    // too, so the fixture cannot accidentally pass by ordering.
+    string bars = wrap(css: "scrollbarvertical { width: 10dp; } scrollbarvertical slidertrack { background-color: #0c1620; } scrollbarvertical sliderbar { background-color: #35566b; } scrollbarvertical sliderbar:hover { background-color: #4a7290; }");
+    string barsOut = rmlToHtml(rml: ref bars);
+    check(t: t, ok: barsOut.contains(substring: "#ui-root ::-webkit-scrollbar{"), what: "scrollbarvertical -> ::-webkit-scrollbar");
+    check(t: t, ok: barsOut.contains(substring: "#ui-root ::-webkit-scrollbar-track{"), what: "slidertrack -> ::-webkit-scrollbar-track");
+    check(t: t, ok: barsOut.contains(substring: "#ui-root ::-webkit-scrollbar-thumb{"), what: "sliderbar -> ::-webkit-scrollbar-thumb");
+    check(t: t, ok: barsOut.contains(substring: "#ui-root ::-webkit-scrollbar-thumb:hover{"), what: "...and :hover is its OWN rule, not swallowed by the prefix it starts with");
+    check(t: t, ok: !barsOut.contains(substring: "#ui-root scrollbarvertical"), what: "no scrollbarvertical rule survives — the browser has no such element and it would match nothing");
+
+    section(what: "uidoc / comments go before the rules are split");
+
+    // ⚠️ THE BRACES IN THIS COMMENT ARE THE POINT. The rule splitter looks for the first `{` and the
+    // first `}` after it; a comment carrying either would cut a rule in half if stripping ran second.
+    string cmt = wrap(css: "/* a comment with { and } in it */ .z { color: red; }");
+    string cmtOut = rmlToHtml(rml: ref cmt);
+    check(t: t, ok: !cmtOut.contains(substring: "a comment with"), what: "the comment is gone");
+    check(t: t, ok: cmtOut.contains(substring: "#ui-root .z{"), what: "...and the rule after it is still scoped correctly, braces in the comment notwithstanding");
+
+    // ---- the image rule left this file (@kama/ui) ----------------------------------------------------
+    //
+    // friendly-fire-department's sixth disagreement rewrote `.pam"` to `.webp"` here. It is now the seam's
+    // `setImageRewrite`, applied by the web leg as it inserts markup (tools/test-web.sh checks the page), so the
+    // rewriter must leave an image's src exactly as the document wrote it.
+    section(what: "uidoc / an image src is left as written — the rewrite is the seam's now");
+
+    string imgDoc = "<rml><head><style>#b{display:block;}</style></head>"
+                  + "<body><img id=\"b\" src=\"/assets/ui/badge.pam\"/></body></rml>";
+    string imgOut = rmlToHtml(rml: ref imgDoc);
+    check(t: t, ok: imgOut.contains(substring: "src=\"/assets/ui/badge.pam\""),
+          what: "a .pam src passes through rmlToHtml untouched");
+
+    // A document with no image is the common case and must be exactly what it was.
+    string plain = tinyDoc();
+    string plainOut = rmlToHtml(rml: ref plain);
+    check(t: t, ok: plainOut.contains(substring: "<div id=\"card\">HI</div>"), what: "a document with no image passes through the new rule unchanged");
+
+    section(what: "uidoc / a document that is not one does not take the process with it");
+
+    string empty = "";
+    string emptyOut = rmlToHtml(rml: ref empty);
+    check(t: t, ok: emptyOut.contains(substring: ":where(#ui-root"), what: "an empty input yields the reset and nothing else, rather than trapping");
+
+    string unclosed = "<rml><head><style>a { color: red;</style></head><body>x</body></rml>";
+    string unclosedOut = rmlToHtml(rml: ref unclosed);
+    check(t: t, ok: unclosedOut.contains(substring: "x"), what: "an unterminated rule still delivers the body — a broken screen beats a blank one");
+}
+
+// A stylesheet wrapped in the smallest document that carries it, so every check goes through the
+// real entry point rather than a helper the shipping path does not call.
+fn string wrap(const ref string css)
+{
+    return "<rml><head><style>\n${css}\n</style></head><body>b</body></rml>";
+}

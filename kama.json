@@ -1,0 +1,25 @@
+{
+  "name": "@kama/ui",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "kind": "library",
+  "kama": ">=0.9.577",
+  "publish": {
+    "exclude": [
+      ".claude/", ".github/", "docs/",
+      "AGENTS.md", "AGENTS.package.md", "AGENTS.ui.md", "CLAUDE.md"
+    ]
+  },
+  "modules": {
+    ".":     { "visibility": "public" },
+    "uidoc": { "visibility": "public" }
+  },
+  "dependencies": {
+    "@kama/rmlui": { "path": "../kama-rmlui" }
+  },
+  "cincludes": ["src"],
+  "jsLibraries": ["src/kama_ui_web.js"],
+  "emSettings": {
+    "EXPORTED_RUNTIME_METHODS": ["HEAP32", "HEAPF32", "HEAPU8"]
+  }
+}

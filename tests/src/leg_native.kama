@@ -1,0 +1,93 @@
+file @compileFor(!ARCH_WASM32);
+// The native leg's half of the suite: how a click is injected (RmlUi's own input), the font, the verdict, and the
+// checks only this leg can make — the recorded commands and textures, typing, and the first-press focus rule.
+
+import {
+    Tally, check, section, Seen, collect, press,
+    core::println,
+    ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect,
+    ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE,
+};
+export { fontPath, injectClick, legTests, report };
+
+// RmlUi's sample face, from @kama/rmlui's fetched tree (SIL OFL 1.1); paths are relative to the package root, where
+// tools/test.sh runs.
+fn string fontPath() { return "../kama-rmlui/third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf"; }
+
+// A click as a person makes one: the pointer to the point, the left button down and up, then the update that
+// dispatches. True: there is no page to miss.
+fn bool injectClick(ref UiContext ui, float32 x, float32 y)
+{
+    ui.mouseMove(x: x, y: y);
+    ui.mouseButton(button: 0, down: true);
+    ui.mouseButton(button: 0, down: false);
+    ui.update();
+    return true;
+}
+
+fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
+{
+    section(what: "native: the recorded commands and textures");
+    ui.update();
+    ui.render();
+    int32 count = ui.commandCount();
+    int32 draws = 0;
+    int32 textured = 0;
+    int32 verts = 0;
+    int32 i = 0;
+    while (i < count) {
+        UiCommand c = ui.command(index: i);
+        bool draw = match (c.kind) { case Draw: true; case _: false; };
+        if (draw) {
+            draws = draws + 1;
+            verts = verts + c.vertexCount;
+            if (c.texture != 0) { textured = textured + 1; }
+        }
+        i = i + 1;
+    }
+    check(t: t, ok: draws > 5 && verts > 0, what: "the document records draws (${draws} draws, ${verts} vertices)");
+    check(t: t, ok: textured > 0, what: "text is drawn from a texture (${textured} textured draws)");
+    int32 textures = ui.textureCount();
+    check(t: t, ok: textures >= 2, what: "a glyph atlas and the provided picture are textures (${textures})");
+    UiTexture tex = ui.texture(handle: 1);
+    check(t: t, ok: tex.width > 0 && tex.height > 0 && ui.textureGeneration(handle: 1) >= 1,
+          what: "texture 1 has a size and a generation (${tex.width} x ${tex.height})");
+    int32 pic = ui.bindElement(elementId: "pic");
+    UiRect pr = ui.elementRect(handle: pic);
+    check(t: t, ok: pr.width == 2.0 && pr.height == 2.0, what: "the provided picture lays out at its own size (${pr.width} x ${pr.height})");
+    UiCommand outside = ui.command(index: count + 3);
+    check(t: t, ok: outside.vertexCount == 0, what: "an out-of-range command is empty");
+
+    section(what: "native: typing into the text field");
+    check(t: t, ok: ui.focusElement(handle: field) && ui.textFocused(), what: "the field takes the ring");
+    ui.setElementText(handle: field, text: "");
+    string typed = "10.0.0.7:270159";
+    foreach (char c in typed.chars()) { ui.typeChar(codepoint: cast<int32>(c)); }
+    ui.update();
+    press(ui: ui, key: UI_KEY_BACKSPACE);
+    string v1 = ui.elementText(handle: field);
+    check(t: t, ok: v1 == "10.0.0.7:27015", what: "typed, and Backspace takes one back ('${v1}')");
+    press(ui: ui, key: UI_KEY_HOME);
+    press(ui: ui, key: UI_KEY_DELETE);
+    string v2 = ui.elementText(handle: field);
+    check(t: t, ok: v2 == "0.0.0.7:27015", what: "Home then Delete edits at the caret ('${v2}')");
+    Seen typing = collect(ui: ui);
+    check(t: t, ok: typing.changes >= 1, what: "a person's typing raises change events (${typing.changes})");
+
+    section(what: "native: a navigation key with nothing focused lands on the first control");
+    ui.focusDocument();
+    ui.update();
+    check(t: t, ok: ui.focusedElement() == 0 && !ui.focusHeld(), what: "the document alone holds no ring");
+    press(ui: ui, key: UI_KEY_DOWN);
+    check(t: t, ok: ui.focusedElement() == first, what: "...and the first arrow lands on the first button");
+}
+
+fn int32 report(ref Tally t)
+{
+    if (t.failed != 0) {
+        println(s: "ui tests (native): ${t.failed} of ${t.run} failed");
+        return 1;
+    }
+    println(s: "ui tests (native): OK, ${t.run} checks");
+    return 0;
+}

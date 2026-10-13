@@ -1,0 +1,150 @@
+// ui::types — the values that cross the UI seam, and the key codes it takes.
+//
+// From the-mallow-man's ui/src/types.kama (itself friendly-fire-department@a676ca3's), with three changes: the geometry
+// pointers are READ-ONLY (`UnsafeConstPtr`, which the games' headers said was owed once kama could spell it), a command
+// says what KIND it is (RmlUi 6's clip masks are now recorded, not dropped), and it carries RmlUi's transform.
+//
+// SEPARATE FROM host.kama ON PURPOSE: a `type contract` whose method returns a type declared in the contract's own file
+// could not be satisfied from another file (a kama defect fixed in 0.9.134). There is no reason to move them back.
+
+export {
+    UiCommand, UiCommandKind, UiTexture, UiEvent, UiEventKind, UiRect,
+    UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT, UI_KEY_DOWN, UI_KEY_UP,
+    UI_KEY_HOME, UI_KEY_END,
+};
+
+// The keys `UiHost.key` takes. ⚠️ THESE ARE GLFW's NUMBERS (and so the-mallow-man's and friendly-fire-department's
+// `engine::input::Key`), not RmlUi's and not the DOM's: a program forwards its platform's codes unchanged, and each
+// backend translates — the native leg to RmlUi's KeyIdentifier, the web leg in kama_ui_web.js. No backend's key enum
+// crosses the seam in either direction.
+//
+// THE SUBSET IS THE CONTRACT: TAB, the four arrows and ENTER move and press the focus ring; BACKSPACE, DELETE, HOME and
+// END edit a focused text field. Anything else is dropped by both legs. ⚠️ SPACE IS NOT IN IT: RmlUi would take it as
+// activation, and a game usually has it as a screen verb — one key cannot mean "press this button" and "leave this
+// screen" (use `focusHeld` to make one key do both safely).
+comptime int32 UI_KEY_ENTER = 257;
+comptime int32 UI_KEY_TAB = 258;
+comptime int32 UI_KEY_BACKSPACE = 259;
+comptime int32 UI_KEY_DELETE = 261;
+comptime int32 UI_KEY_RIGHT = 262;
+comptime int32 UI_KEY_LEFT = 263;
+comptime int32 UI_KEY_DOWN = 264;
+comptime int32 UI_KEY_UP = 265;
+comptime int32 UI_KEY_HOME = 268;
+comptime int32 UI_KEY_END = 269;
+
+// What a click or a change arrived on. Elements are INTEGER HANDLES from `bindElement`, never strings: dispatch is an
+// integer compare rather than a string compare.
+type enum UiEventKind { None, Click, Change }
+
+type value UiEvent {
+    public UiEventKind kind;
+    public int32 element;      // the handle `bindElement` returned
+
+    public ctor make(UiEventKind kind, int32 element)
+    {
+        this.kind = kind;
+        this.element = element;
+    }
+}
+
+// What a command asks of the renderer. Apply them IN ORDER: a clip-mask command changes every draw after it.
+//   Draw            draw the geometry (translation, texture, scissor, transform)
+//   ClipEnable      from here on, draws are clipped to the clip mask
+//   ClipDisable     from here on, they are not
+//   ClipSet         the mask becomes this geometry's area (cleared first)
+//   ClipSetInverse  the mask becomes everything OUTSIDE this geometry (cleared first)
+//   ClipIntersect   the mask is intersected with this geometry
+// ⚠️ A RENDERER THAT DOES NOT IMPLEMENT CLIP MASKS MUST SKIP EVERY NON-`Draw` COMMAND, not draw it: a ClipSet carries
+// real geometry (a rounded box's shape) that is a mask, not a picture. RmlUi uses the mask for `overflow: hidden` inside
+// a rounded border or a transform; skipping it draws the content unclipped there, which is what both games always did.
+type enum UiCommandKind { Draw, ClipEnable, ClipDisable, ClipSet, ClipSetInverse, ClipIntersect }
+
+// One recorded command. `vertices` is a flat float32 array, 8 floats per vertex — x, y, u, v, r, g, b, a — with
+// PREMULTIPLIED colour in 0..1. Both pointers are the backend's, READ-ONLY, and valid only until the next `update` or
+// `render`; nothing here frees them (anything crossing the FFI seam is unowned).
+type value UiCommand {
+    public UiCommandKind kind;
+    public UnsafeConstPtr<float32> vertices;
+    public int32 vertexCount;
+    public UnsafeConstPtr<int32> indices;
+    public int32 indexCount;
+    public int32 texture;          // 0 when the geometry is untextured
+    public float32 translateX;
+    public float32 translateY;
+    public bool scissorEnabled;
+    public int32 scissorX;
+    public int32 scissorY;
+    public int32 scissorWidth;
+    public int32 scissorHeight;
+    // RCSS `transform`: a column-major 4x4 applied after the translation; the identity when `transformed` is false.
+    public bool transformed;
+    public InlineArray<float32>#(16) transform;
+
+    // What a backend with nothing to draw returns, and what an out-of-range index yields.
+    public unsafe ctor empty()
+    {
+        this.kind = UiCommandKind::Draw;
+        this.vertices = null;
+        this.vertexCount = 0;
+        this.indices = null;
+        this.indexCount = 0;
+        this.texture = 0;
+        this.translateX = 0.0;
+        this.translateY = 0.0;
+        this.scissorEnabled = false;
+        this.scissorX = 0;
+        this.scissorY = 0;
+        this.scissorWidth = 0;
+        this.scissorHeight = 0;
+        this.transformed = false;
+        this.transform = [1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, 0.0f32,
+                          0.0f32, 0.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32];
+    }
+}
+
+// A texture the UI generated — the font atlas, built during layout — or a provided image once a document showed it.
+// RGBA8, four bytes a pixel, premultiplied alpha, tightly packed. Read-only.
+type value UiTexture {
+    public UnsafeConstPtr<uint8> pixels;
+    public int32 width;
+    public int32 height;
+
+    public unsafe ctor make(UnsafeConstPtr<uint8> pixels, int32 width, int32 height)
+    {
+        this.pixels = pixels;
+        this.width = width;
+        this.height = height;
+    }
+
+    public unsafe ctor empty()
+    {
+        this.pixels = null;
+        this.width = 0;
+        this.height = 0;
+    }
+}
+
+// An element's border box in framebuffer pixels. Zero-sized when the handle is unknown or nothing has laid out yet.
+type value UiRect {
+    public float32 x;
+    public float32 y;
+    public float32 width;
+    public float32 height;
+
+    public ctor make(float32 x, float32 y, float32 width, float32 height)
+    {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+    }
+
+    public ctor empty()
+    {
+        this.x = 0.0;
+        this.y = 0.0;
+        this.width = 0.0;
+        this.height = 0.0;
+    }
+}

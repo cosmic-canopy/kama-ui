@@ -1,0 +1,49 @@
+// ui::nav — a pad's d-pad and stick as arrow presses (pure, so every leg runs it).
+// From the-mallow-man's tests/src/menu_test.kama (E7b, "the pad's presses"), ported to this harness.
+
+import { Tally, check, ui::UiNav, ui::UI_NAV_DELAY_S, ui::UI_NAV_REPEAT_S, ui::UI_KEY_UP, ui::UI_KEY_DOWN,
+         ui::UI_KEY_LEFT, ui::UI_KEY_RIGHT };
+export { navTests };
+
+fn void navTests(ref Tally t)
+{
+    float32 frame = 1.0 / 60.0;
+    UiNav nav = UiNav.fresh();
+    check(t: t, ok: (nav.step(up: 0.0, down: 0.0, left: 0.0, right: 0.0, dt: frame)) == (0), what: "nav: a resting stick presses nothing");
+    check(t: t, ok: (nav.step(up: 0.0, down: 0.5, left: 0.0, right: 0.0, dt: frame)) == (0), what: "nav: under the threshold presses nothing");
+    check(t: t, ok: (nav.step(up: 0.0, down: 0.9, left: 0.0, right: 0.0, dt: frame)) == (UI_KEY_DOWN), what: "nav: a push presses at once");
+    // Held: nothing until the delay, then one press a repeat.
+    int32 presses = 0;
+    float32 elapsed = 0.0;
+    while (elapsed < UI_NAV_DELAY_S - 2.0 * frame) {
+        if (nav.step(up: 0.0, down: 0.9, left: 0.0, right: 0.0, dt: frame) != 0) { presses = presses + 1; }
+        elapsed = elapsed + frame;
+    }
+    check(t: t, ok: (presses) == (0), what: "nav: no repeat before the delay");
+    int32 more = 0;
+    float32 hold = 0.0;
+    while (hold < 1.0) {
+        if (nav.step(up: 0.0, down: 0.9, left: 0.0, right: 0.0, dt: frame) != 0) { more = more + 1; }
+        hold = hold + frame;
+    }
+    int32 expect = cast<int32>(1.0 / UI_NAV_REPEAT_S);
+    check(t: t, ok: more >= expect - 1 && more <= expect + 2, what: "nav: then a press every repeat (${more} in a second)");
+    // Hysteresis: falling to 0.4 keeps holding (no new press, no release); under 0.35 lets go.
+    UiNav h = UiNav.fresh();
+    int32 first = h.step(up: 0.0, down: 0.0, left: 0.0, right: 0.8, dt: frame);
+    int32 sag = h.step(up: 0.0, down: 0.0, left: 0.0, right: 0.4, dt: frame);
+    check(t: t, ok: first == UI_KEY_RIGHT && sag == 0 && h.holding() == UI_KEY_RIGHT, what: "nav: a sagging stick keeps holding (hysteresis)");
+    int32 gone = h.step(up: 0.0, down: 0.0, left: 0.0, right: 0.2, dt: frame);
+    check(t: t, ok: gone == 0 && h.holding() == 0, what: "nav: ...and lets go under the low mark");
+    // A change of direction presses at once; a hitch presses once, not once per repeat it covered.
+    UiNav c = UiNav.fresh();
+    int32 a = c.step(up: 1.0, down: 0.0, left: 0.0, right: 0.0, dt: frame);
+    int32 b = c.step(up: 0.0, down: 0.0, left: 1.0, right: 0.0, dt: frame);
+    check(t: t, ok: a == UI_KEY_UP && b == UI_KEY_LEFT, what: "nav: a new direction presses at once");
+    UiNav j = UiNav.fresh();
+    int32 j0 = j.step(up: 0.0, down: 1.0, left: 0.0, right: 0.0, dt: frame);
+    int32 j1 = j.step(up: 0.0, down: 1.0, left: 0.0, right: 0.0, dt: 2.0);
+    int32 j2 = j.step(up: 0.0, down: 1.0, left: 0.0, right: 0.0, dt: frame);
+    check(t: t, ok: j0 == UI_KEY_DOWN && j1 == UI_KEY_DOWN && j2 == 0, what: "nav: a two-second hitch presses once");
+}
+

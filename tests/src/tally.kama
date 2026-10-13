@@ -1,0 +1,26 @@
+// The harness: a count of checks run and failed, and a check that prints a failing case's name.
+import { core::println };
+export { Tally, check, section };
+
+type value Tally {
+    public int32 run;
+    public int32 failed;
+
+    public ctor zero()
+    {
+        this.run = 0;
+        this.failed = 0;
+    }
+}
+
+fn void check(ref Tally t, bool ok, const ref string what)
+{
+    t.run = t.run + 1;
+    if (!ok) {
+        t.failed = t.failed + 1;
+        println(s: "  FAIL ${what}");
+    }
+}
+
+// A heading for the checks that follow; silent, kept so a suite reads in sections.
+fn void section(const ref string what) { }

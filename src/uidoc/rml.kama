@@ -1,0 +1,416 @@
+// ui::uidoc — one `.rml` document, rewritten as HTML a browser will accept.
+//
+// From the-mallow-man's uidoc/src/rml.kama (itself friendly-fire-department@a676ca3's, unchanged there), now a module of
+// @kama/ui rather than a package of its own: `ui::uidoc::rmlToHtml`, `ui::uidoc::escapeText`. ONE change: the image
+// rule (`.pam"` -> `.webp"`, the sixth disagreement) left this file. It encoded one game's convention in a general
+// rewriter; it is now `UiHost.setImageRewrite(nativeExt:, webExt:)`, applied by the web leg to every `<img src>` it
+// inserts — `setInnerRml` content included, which the string rule here never reached.
+//
+// THIS IS WHAT KEEPS THE WEB LEG FROM OWNING A SECOND COPY OF EVERY SCREEN. A program's `.rml` documents are the
+// single source: RmlUi parses them natively, and on wasm `ui::UiContext` runs them through here and hands
+// the result to `innerHTML`. A screen therefore cannot drift between the two targets, because there
+// is only one of it — which is the whole reason this file exists rather than an `assets/web/` folder
+// full of hand-kept parallel HTML.
+//
+// ⚠️ IT TAKES A STRING AND NEVER A PATH: that lets a suite cover the rewriter on every leg with nothing on disk at
+// all. The caller reads the file.
+//
+// ⚠️ AND IT IS A REWRITER, NOT A PARSER. It does the things RCSS and CSS actually disagree about — five in the
+// stylesheet, listed against the reset below, plus the `dp` unit and the selector scoping — and nothing else. Every one
+// was found by reading real documents (friendly-fire-department's screens). A document that grows a new disagreement
+// will look wrong in the browser and right natively, so when that happens the fix belongs HERE and in a suite beside
+// it — not in a per-screen special case.
+//
+// What it deliberately does NOT do: expand entities (RmlUi knows five, HTML knows them all, and the
+// documents already write literal UTF-8 for exactly that reason), touch the body markup beyond stripping
+// comments, or validate anything. Malformed input yields malformed output; the check that the result is
+// right is a real page (this package's tools/test-web.sh, the games' tools/check-web).
+
+export { rmlToHtml, escapeText };
+
+// The RCSS→CSS reset, emitted ahead of every document's own rules.
+//
+// ⚠️ EVERY LINE OF IT IS `:where(...)`, WHICH HAS ZERO SPECIFICITY. That is the point: a reset that a
+// document cannot override is not a reset, it is a bug waiting for the first screen that sets a
+// border width. `border-style: solid` without a zero-specificity `border-width: 0` beside it would
+// give every element on every screen a 3px `medium` border, because that is what CSS does once a
+// style is present and a width is not.
+//
+// The five disagreements, in order:
+//
+//   1. ⚠️ RCSS BORDERS ARE ALWAYS SOLID AND HAVE NO `border-style` PROPERTY AT ALL. The documents set
+//      `border-width` and `border-color` and expect a border; in CSS that draws NOTHING without a
+//      style. The receipt's hard offset shadow — a right and bottom border stood in for `box-shadow`,
+//      which RmlUi registers and our native shim cannot render — is entirely this.
+//   2. ⚠️ RmlUi SHIPS NO DEFAULT STYLESHEET, so an unstyled element is `display: inline` and every
+//      document opens by declaring `display: block` for the tags it uses. Defaulting to `inline` here
+//      reproduces that FAITHFULLY, which matters more than it looks: a future screen that forgets the
+//      rule then lays out wrong in the browser exactly as it does natively, rather than being quietly
+//      rescued by the browser's UA sheet and shipping broken on the leg nobody screenshotted.
+//      ⚠️ AND `style` HAS TO BE PUT BACK, WHICH COST A SCREENSHOT TO FIND. A universal
+//      `display: inline` also catches the `<style>` element this function emits, and the UA rule that
+//      normally hides it is exactly what has just been overridden — so the whole stylesheet renders
+//      as a wall of visible text above the screen. Every structural check passed while it did: the
+//      elements were all present, correct and in the right place, with a paragraph of CSS on top of
+//      them. That is what looking at the picture is for.
+//   3. The browser's UA sheet is loud where RmlUi's is silent — margins on headings and paragraphs, a
+//      whole appearance on `button`. All of it goes.
+//   4. Fonts and colour inherit rather than being reset by the UA sheet, which is RmlUi's model.
+//   5. ⚠️ A FORM CONTROL IS PAINTED BY THE BROWSER ITSELF, AND NOTHING THE DOCUMENT SAYS ABOUT IT
+//      REACHES THAT PAINT. This is the fifth, added by M4 slice 6's options screen and different in
+//      kind from the four before it: RmlUi auto-instances a range's `slidertrack` and `sliderbar` as real
+//      ELEMENTS a stylesheet can colour, while a browser draws a range through its own machinery and
+//      those rules match nothing at all. The screen was a stock Chrome-blue slider in a teal game.
+//      ⚠️ THE FULL REPAIR WAS WEIGHED AND DECLINED. Mapping the two sub-elements onto
+//      `::-webkit-slider-runnable-track` and `::-webkit-slider-thumb` also needs the
+//      `-webkit-appearance: none` those require, and then a negative thumb margin to re-centre it on
+//      a track of a different height — several rules that one shared document cannot state and that
+//      only one leg would ever read. `accent-color` is one declaration that hands the browser the
+//      document's own colour and leaves it in charge of its own control, which is the right division
+//      on a leg whose whole premise is that the browser paints the DOM.
+//      ⚠️ AND IT IS `currentColor` RATHER THAN A COLOUR, WHICH IS THE PART THAT KEEPS THIS GENERIC.
+//      A hard-coded teal here would put a game's palette inside a document rewriter. Written this
+//      way the DOCUMENT says `color: #17c3b2` on the control — a property RCSS understands and
+//      harmlessly ignores on a widget with no text — and the browser's accent follows it. Writing
+//      `accent-color` in the document directly was tried first and made every native load print
+//      `Syntax error parsing property declaration`, which is how people learn to ignore warnings.
+//
+// `#ui-root` itself is the document's `<body>` and is therefore a block, sized by the stage the shell
+// puts around it. Its geometry lives in the shell, not here — this file emits nothing that depends on
+// where on screen the document ends up.
+// ⚠️ A FUNCTION RATHER THAN A `comptime string`, AND THE COMPILER IS RIGHT TO INSIST. A module
+// `static` may own no memory and a `comptime` value may not be a string, so the reset cannot be a
+// constant at all — "persistence is ownership", as the diagnostic puts it. One literal returned by
+// one function is the shape that has no owner to argue about.
+fn string reset()
+{
+    return ":where(#ui-root,#ui-root *){box-sizing:border-box;border-style:solid;border-width:0;margin:0;padding:0;font:inherit;color:inherit;text-align:inherit;display:inline}\n:where(#ui-root style,#ui-root script,#ui-root head,#ui-root title){display:none}\n:where(#ui-root){display:block;position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden}\n:where(#ui-root br){display:inline}\n:where(#ui-root button){background:none;border-radius:0;cursor:pointer;appearance:none;-webkit-appearance:none}\n:where(#ui-root input){accent-color:currentColor}\n";
+}
+
+// One `.rml` document as HTML: a `<style>` block, then the body markup.
+//
+// The result is what `#ui-root`'s `innerHTML` is set to, so it is a FRAGMENT rather than a page —
+// there is no `<html>`, no `<head>` and no `<body>` in it, and the `<style>` rides along inside the
+// fragment because that is what makes swapping documents a single assignment.
+fn string rmlToHtml(const ref string rml)
+{
+    string styleRaw = between(src: rml, open: "<style>", close: "</style>");
+    string bodyRaw = between(src: rml, open: "<body>", close: "</body>");
+
+    // Comments go first, and CSS comments go before the rules are split. The rule splitter looks for
+    // `{` and `}` and a comment is free to contain either; stripping first is what makes the splitter
+    // allowed to be as simple as it is.
+    string styleBare = stripSpans(src: styleRaw, open: "/*", close: "*/");
+    string bodyBare = stripSpans(src: bodyRaw, open: "<!--", close: "-->");
+
+    string styleUnits = unitsToPx(src: styleBare);
+    string styleScoped = scopeSelectors(css: styleUnits);
+    string pre = reset();
+
+    return "<style>\n${pre}${styleScoped}</style>\n${bodyBare}";
+}
+
+// The text between the first `open` and the next `close` after it, or "" when `open` is absent.
+// An unterminated span yields everything after `open`, which is the reading that shows a truncated
+// document on screen rather than a blank one.
+fn string between(const ref string src, const ref string open, const ref string close)
+{
+    string result = "";
+    Optional<usize> a = src.find(substring: open);
+    match (a) {
+        case None: { }
+        case Some(value: p): {
+            isize from = cast<isize>(p) + open.length();
+            isize n = src.length();
+            string tail = src.substring(start: from, end: n);
+            Optional<usize> b = tail.find(substring: close);
+            match (b) {
+                case None: { result = copy tail; }
+                case Some(value: q): {
+                    isize to = cast<isize>(q);
+                    result = tail.substring(start: 0, end: to);
+                }
+            };
+        }
+    };
+    return result;
+}
+
+// Every `open`…`close` span removed, the text around them kept. An unterminated span takes the rest
+// of the input with it — an unclosed comment swallowing its file is what every CSS and HTML parser
+// already does, so matching that beats inventing a recovery rule.
+fn string stripSpans(const ref string src, const ref string open, const ref string close)
+{
+    string acc = "";
+    string rest = copy src;
+    bool going = true;
+    while (going) {
+        Optional<usize> a = rest.find(substring: open);
+        match (a) {
+            case None: {
+                acc = "${acc}${rest}";
+                going = false;
+            }
+            case Some(value: p): {
+                isize cut = cast<isize>(p);
+                string head = rest.substring(start: 0, end: cut);
+                acc = "${acc}${head}";
+
+                isize from = cut + open.length();
+                isize n = rest.length();
+                string tail = rest.substring(start: from, end: n);
+                Optional<usize> b = tail.find(substring: close);
+                match (b) {
+                    case None: { going = false; }
+                    case Some(value: q): {
+                        isize skip = cast<isize>(q) + close.length();
+                        isize m = tail.length();
+                        rest = tail.substring(start: skip, end: m);
+                    }
+                };
+            }
+        };
+    }
+    return acc;
+}
+
+// `12.5dp` -> `12.5px`.
+//
+// ⚠️ ONLY WHERE THE `dp` IS ACTUALLY A UNIT — preceded by a digit and not followed by another
+// identifier byte. A blind `replace("dp", "px")` would rewrite `#dropzone`, `.dpad` and the word
+// "dropped" in a class name, and every one of those failures reads as a missing style rather than as
+// a mangled one. The suite pins the negative cases as hard as the positive ones.
+//
+// `dp` is RmlUi's density-independent pixel and a document is laid out in the stage's virtual resolution (the size
+// `UiContext.open` was given), so one `dp` IS one CSS pixel of the stage. The stage is then scaled as a whole, which
+// is why this is a rename rather than any arithmetic.
+fn string unitsToPx(const ref string src)
+{
+    string acc = "";
+    isize n = src.length();
+    isize i = 0;
+    isize runStart = 0;
+
+    while (i + 1 < n) {
+        uint8 c0 = src[i];
+        uint8 c1 = src[i + 1];
+        bool hit = false;
+
+        if (c0 == 100 && c1 == 112) {                 // 'd', 'p'
+            bool prevDigit = false;
+            if (i > 0) {
+                isize back = i - 1;
+                uint8 p = src[back];
+                prevDigit = digitByte(b: p);
+            }
+            bool nextIdent = false;
+            isize j = i + 2;
+            if (j < n) {
+                uint8 q = src[j];
+                nextIdent = identByte(b: q);
+            }
+            hit = prevDigit && !nextIdent;
+        }
+
+        if (hit) {
+            string run = src.substring(start: runStart, end: i);
+            acc = "${acc}${run}px";
+            i = i + 2;
+            runStart = i;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    string tail = src.substring(start: runStart, end: n);
+    return "${acc}${tail}";
+}
+
+// Every rule's selector list rewritten by `mapSelector`, the declaration blocks passed through
+// untouched.
+//
+// The splitter is deliberately naive — first `{`, first `}` after it — and it is allowed to be
+// because comments are already gone and RCSS has no at-rules, no nesting and nothing else that puts
+// a brace anywhere else. ⚠️ If a document ever grows an `@media`, this is what breaks, and it breaks
+// by emitting the at-rule's selector as a rule of its own rather than by losing anything.
+fn string scopeSelectors(const ref string css)
+{
+    string acc = "";
+    string rest = copy css;
+    bool going = true;
+
+    while (going) {
+        Optional<usize> ob = rest.find(substring: "{");
+        match (ob) {
+            case None: {
+                // Trailing whitespace after the last rule. Nothing to map.
+                going = false;
+            }
+            case Some(value: p): {
+                isize cut = cast<isize>(p);
+                string sel = rest.substring(start: 0, end: cut);
+                string mapped = mapSelectorList(sel: sel);
+
+                isize n = rest.length();
+                string tail = rest.substring(start: cut, end: n);
+                Optional<usize> cb = tail.find(substring: "}");
+                match (cb) {
+                    case None: {
+                        acc = "${acc}${mapped}${tail}\n";
+                        going = false;
+                    }
+                    case Some(value: q): {
+                        isize endAt = cast<isize>(q) + 1;
+                        isize m = tail.length();
+                        string block = tail.substring(start: 0, end: endAt);
+                        acc = "${acc}${mapped}${block}\n";
+                        rest = tail.substring(start: endAt, end: m);
+                    }
+                };
+            }
+        };
+    }
+
+    return acc;
+}
+
+// A comma-separated selector list, each entry mapped and the whole thing re-joined. Whitespace and
+// line breaks from the source are NOT preserved: the output is normalised so the suite can pin it
+// exactly, and a browser does not care.
+fn string mapSelectorList(const ref string sel)
+{
+    string joined = "";
+    bool first = true;
+    foreach (string piece in sel.split(separator: ",")) {
+        string one = piece.trim();
+        if (!one.isEmpty()) {
+            string mapped = mapSelector(sel: one);
+            if (first) {
+                joined = copy mapped;
+            } else {
+                joined = "${joined},${mapped}";
+            }
+            first = false;
+        }
+    }
+    return joined;
+}
+
+// One selector.
+//
+// ⚠️ EVERYTHING IS SCOPED UNDER `#ui-root`, INCLUDING THE BARE TAG SELECTORS. A document's
+// `h1, h2, p, div { display: block }` must not reach the page around the canvas, and scoping is also
+// what lets the reset above stay at zero specificity: every document rule gains exactly one id, so
+// their order relative to EACH OTHER is untouched and only the reset falls below them.
+//
+// Two families of selector need real translation rather than a prefix:
+//
+//   - `body` IS the document root, which here is `#ui-root` itself rather than something inside it.
+//   - ⚠️ RmlUi AUTO-INSTANCES A SCROLLBAR AS REAL ELEMENTS and the receipt styles them by tag name
+//     (`scrollbarvertical slidertrack`, and so on). A browser has no such elements — its scrollbar is
+//     a pseudo-element — so those rules would match nothing and the cream slip would sit under a
+//     stock grey scrollbar. Mapping them keeps the DOCUMENT as the source of those colours, which is
+//     the point of this whole file; hard-coding them in the reset would have been a second copy.
+//
+// ⚠️ The scrollbar cases are ordered LONGEST FIRST because `scrollbarvertical sliderbar:hover` starts
+// with `scrollbarvertical sliderbar`, and a prefix test in the other order would eat it.
+fn string mapSelector(const ref string sel)
+{
+    if (sel == "scrollbarvertical sliderbar:hover") { return "#ui-root ::-webkit-scrollbar-thumb:hover"; }
+    if (sel == "scrollbarvertical sliderbar") { return "#ui-root ::-webkit-scrollbar-thumb"; }
+    if (sel == "scrollbarvertical slidertrack") { return "#ui-root ::-webkit-scrollbar-track"; }
+    if (sel == "scrollbarvertical") { return "#ui-root ::-webkit-scrollbar"; }
+
+    if (sel == "body") { return "#ui-root"; }
+    if (sel.startsWith(prefix: "body:")) {
+        isize n = sel.length();
+        string rest = sel.substring(start: 4, end: n);
+        return "#ui-root${rest}";
+    }
+    if (sel.startsWith(prefix: "body ")) {
+        isize n = sel.length();
+        string rest = sel.substring(start: 5, end: n);
+        return "#ui-root ${rest}";
+    }
+
+    return "#ui-root ${sel}";
+}
+
+// A CSS identifier byte — what tells `12dp` (a unit) from `dpi` and `#dpad` (not one).
+fn bool identByte(uint8 b)
+{
+    if (b >= 48 && b <= 57) { return true; }      // 0-9
+    if (b >= 65 && b <= 90) { return true; }      // A-Z
+    if (b >= 97 && b <= 122) { return true; }     // a-z
+    if (b == 45) { return true; }                 // -
+    if (b == 95) { return true; }                 // _
+    return false;
+}
+
+fn bool digitByte(uint8 b)
+{
+    return b >= 48 && b <= 57;
+}
+
+// ---- escaping text that did not come from us ---------------------------------------------------
+//
+// ⚠️ **`setInnerRml` IS A PARSER AND NOTHING ESCAPES ON THE WAY IN.** Everything written through it
+// so far has been ours — literals and numbers — so this has been a debt rather than a bug. It stops
+// being either the moment a PLAYER-SUPPLIED name reaches a document, which M5's lobby is: the relay
+// stores a name a client chose and rebroadcasts it to the whole room, and `lobbyClampName` bounds its
+// LENGTH and says nothing at all about its CONTENT.
+//
+// ⚠️ **AND THE TWO LEGS FAIL DIFFERENTLY, WHICH IS WHY THIS IS NOT A TIDINESS FIX.** Natively an
+// unescaped `<` is an RmlUi parse oddity — a mangled screen. On the web `ui::web`'s `setInnerRml`
+// hands the string to `innerHTML`, so it is **script injection**, from a string another player typed.
+//
+// ---- the escape set is RmlUi's OWN, character for character ----
+//
+// `<`, `>`, `&` and `"`, which is exactly what `StringUtilities::EncodeRml` does in the vendored
+// source (`Source/Core/StringUtilities.cpp`; @kama/rmlui's `encodeRml` is that function itself). ⚠️ **That correspondence is the point
+// rather than a coincidence**: escaping something natively that the browser would not accept, or the
+// reverse, would put a difference between the two legs into the one file whose whole job is that
+// there is no difference. All four are HTML's oldest named entities and no browser has ever needed
+// a fifth for them.
+//
+// ⚠️ **`'` IS DELIBERATELY NOT ESCAPED, AND THAT IS A STATED LIMIT RATHER THAN AN OVERSIGHT.** RmlUi
+// does not escape it either, and it is structural in neither a text node nor a double-quoted
+// attribute — which is the only kind this tree writes. **A single-quoted attribute would need more
+// than this function**, so do not write one; the assertion that none exists is cheaper to keep true
+// than a fifth replacement is to get right on both parsers.
+//
+// ⚠️ **AND IT LIVES HERE RATHER THAN IN `ui` FOR `rmlToHtml`'s OWN REASON**: `uidoc` has no
+// dependencies and takes a string rather than a device, so `tests` covers it on macOS, Linux AND
+// wasm32. In `ui` it would be reachable only through RmlUi and a browser.
+fn string escapeText(const ref string raw)
+{
+    string acc = "";
+    isize n = raw.length();
+    isize i = 0;
+    isize runStart = 0;
+
+    // ⚠️ **BYTE-WISE IS SAFE HERE, AND UTF-8 IS WHY.** A `string` is UTF-8 bytes and every byte of a
+    // multi-byte sequence is >= 0x80, so none of them can ever equal one of the four ASCII bytes
+    // below. Scanning bytes therefore cannot cut a codepoint in half — the property that makes this
+    // the same shape as every other rewriter in this file rather than a special case needing
+    // `chars()`.
+    while (i < n) {
+        uint8 b = raw[i];
+        bool special = b == 60 || b == 62 || b == 38 || b == 34;   // < > & "
+        if (special) {
+            string run = raw.substring(start: runStart, end: i);
+            string ent = "&quot;";
+            if (b == 60) { ent = "&lt;"; }
+            if (b == 62) { ent = "&gt;"; }
+            if (b == 38) { ent = "&amp;"; }
+            acc = "${acc}${run}${ent}";
+            i = i + 1;
+            runStart = i;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    string tail = raw.substring(start: runStart, end: n);
+    return "${acc}${tail}";
+}

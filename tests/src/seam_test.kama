@@ -1,0 +1,198 @@
+// The seam, on whichever leg this build is: the SAME checks against `ui::UiContext` natively (through @kama/rmlui) and
+// in a browser (through the DOM). One document (tests/fixtures/seam.rml), loaded from a file and from text; an event
+// round trip from a real injected click; the focus ring walked by keys; controls written and read back; a rewrite
+// re-bound; the document closed. Where the legs legitimately differ (commands, typing, the browser's own focus model),
+// the check lives in leg_native.kama or leg_web.kama instead.
+
+import {
+    Tally, check, section, injectClick, fontPath, legTests,
+    ui::UiContext, ui::UiEvent, ui::UiEventKind, ui::UiRect,
+    ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP,
+    ui::uidoc::escapeText,
+};
+export { seamTests, Seen, collect, press, centerX, centerY };
+
+// What the queue held: how many events, how many clicks and changes, and the handles of the first two.
+type value Seen {
+    public int32 count;
+    public int32 clicks;
+    public int32 changes;
+    public int32 first;
+    public int32 second;
+
+    public ctor none()
+    {
+        this.count = 0;
+        this.clicks = 0;
+        this.changes = 0;
+        this.first = 0;
+        this.second = 0;
+    }
+}
+
+fn Seen collect(ref UiContext ui)
+{
+    Seen s = Seen.none();
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                s.count = s.count + 1;
+                bool click = match (ev.kind) { case Click: true; case _: false; };
+                bool change = match (ev.kind) { case Change: true; case _: false; };
+                if (click) { s.clicks = s.clicks + 1; }
+                if (change) { s.changes = s.changes + 1; }
+                if (s.count == 1) { s.first = ev.element; }
+                if (s.count == 2) { s.second = ev.element; }
+            }
+        };
+    }
+    return s;
+}
+
+fn void press(ref UiContext ui, int32 key)
+{
+    ui.key(code: key, down: true, shift: false);
+    ui.key(code: key, down: false, shift: false);
+    ui.update();
+}
+
+fn float32 centerX(UiRect r) { return r.x + r.width * 0.5; }
+fn float32 centerY(UiRect r) { return r.y + r.height * 0.5; }
+
+fn string seamText()
+{
+    return "<rml><head><title>Text</title><style>
+        body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
+        div, button { display: block; }
+        button { width: 160dp; height: 30dp; tab-index: auto; nav: auto; }
+    </style></head><body>
+        <div id='box'><button id='only' autofocus>Only</button></div>
+    </body></rml>";
+}
+
+fn void seamTests(ref Tally t)
+{
+    section(what: "the seam: open, a document from a file, bound elements");
+    string font = fontPath();
+    UiContext ui = UiContext.open(width: 1280, height: 720, fontPath: font);
+    check(t: t, ok: ui.isOpen(), what: "the UI opens");
+    if (!ui.isOpen()) { return; }
+    ui.setDpRatio(ratio: 1.0);
+    ui.setViewport(offsetX: 0.0, offsetY: 0.0, scale: 1.0, visible: true);
+    // Natively the picture is the bytes below; on the web the browser fetches /img/dot.webp itself.
+    ui.setImageRewrite(nativeExt: ".pam", webExt: ".webp");
+    InlineArray<uint8>#(16) pixels = [255ui8, 0ui8, 0ui8, 255ui8, 0ui8, 255ui8, 0ui8, 255ui8,
+                                      0ui8, 0ui8, 255ui8, 255ui8, 255ui8, 255ui8, 255ui8, 255ui8];
+    ui.provideImage(name: "img/dot.pam", rgba: pixels.view(), width: 2, height: 2);
+
+    check(t: t, ok: ui.loadDocument(path: "tests/fixtures/seam.rml"), what: "a document loads from a file");
+    int32 first = ui.bindElement(elementId: "first");
+    int32 second = ui.bindElement(elementId: "second");
+    int32 field = ui.bindElement(elementId: "field");
+    int32 last = ui.bindElement(elementId: "last");
+    int32 panel = ui.bindElement(elementId: "panel");
+    int32 rows = ui.bindElement(elementId: "rows");
+    int32 meter = ui.bindElement(elementId: "meter");
+    int32 level = ui.bindElement(elementId: "level");
+    check(t: t, ok: first > 0 && second > 0 && field > 0 && last > 0 && panel > 0 && rows > 0 && meter > 0 && level > 0,
+          what: "every id binds to a handle");
+    check(t: t, ok: ui.bindElement(elementId: "no-such-id") == 0, what: "an unknown id binds to 0");
+    check(t: t, ok: ui.bindElement(elementId: "first") == first, what: "binding an id again gives the same handle");
+    ui.update();
+    ui.render();
+    UiRect fr = ui.elementRect(handle: first);
+    check(t: t, ok: fr.width == 200.0 && fr.height == 32.0, what: "a bound button has its laid-out box (${fr.width} x ${fr.height})");
+
+    section(what: "the seam: the focus ring");
+    check(t: t, ok: ui.focusedElement() == first && ui.focusHeld(), what: "the ring starts on the autofocus button");
+    press(ui: ui, key: UI_KEY_DOWN);
+    check(t: t, ok: ui.focusedElement() == second, what: "down: second");
+    press(ui: ui, key: UI_KEY_DOWN);
+    check(t: t, ok: ui.focusedElement() == field && ui.textFocused(), what: "down: the text field, and it is a text field");
+    press(ui: ui, key: UI_KEY_DOWN);
+    check(t: t, ok: ui.focusedElement() == last && !ui.textFocused(), what: "down: last, no longer in a text field");
+    press(ui: ui, key: UI_KEY_DOWN);
+    check(t: t, ok: ui.focusedElement() == first, what: "down from last wraps to first");
+    press(ui: ui, key: UI_KEY_UP);
+    check(t: t, ok: ui.focusedElement() == last, what: "up from first wraps to last");
+    press(ui: ui, key: UI_KEY_TAB);
+    int32 afterTab = ui.focusedElement();
+    check(t: t, ok: afterTab == first, what: "TAB walks the same ring (on ${afterTab}; first ${first}, second ${second}, field ${field}, last ${last})");
+    check(t: t, ok: ui.focusElement(handle: second) && ui.focusedElement() == second, what: "focusElement puts the ring on second");
+    collect(ui: ui);
+    press(ui: ui, key: UI_KEY_ENTER);
+    Seen entered = collect(ui: ui);
+    check(t: t, ok: entered.clicks == 2 && entered.first == second && entered.second == panel,
+          what: "ENTER clicks the focused button: second's click, then the panel's as it bubbles (${entered.clicks} clicks)");
+
+    section(what: "the seam: a real click, injected, comes back as an event");
+    UiRect lr = ui.elementRect(handle: last);
+    check(t: t, ok: injectClick(ui: ui, x: centerX(r: lr), y: centerY(r: lr)), what: "a click is injected at last's box");
+    Seen clicked = collect(ui: ui);
+    check(t: t, ok: clicked.clicks == 2 && clicked.first == last && clicked.second == panel,
+          what: "...and arrives as last's click, then the panel's (${clicked.clicks} clicks, first ${clicked.first})");
+    UiRect mr = ui.elementRect(handle: meter);
+    injectClick(ui: ui, x: centerX(r: mr), y: centerY(r: mr));
+    Seen bare = collect(ui: ui);
+    check(t: t, ok: bare.clicks == 1 && bare.first == meter, what: "a click outside the panel reaches only what was hit");
+
+    section(what: "the seam: controls written and read, quietly");
+    string hello = "hello, seam";
+    ui.setElementText(handle: field, text: hello);
+    string got = ui.elementText(handle: field);
+    check(t: t, ok: got == hello, what: "a text field's value reads back ('${got}')");
+    ui.setElementValue(handle: level, value: 0.25);
+    float32 lv = ui.elementValue(handle: level);
+    check(t: t, ok: lv > 0.249 && lv < 0.251, what: "a range's value reads back (${lv})");
+    Seen quiet = collect(ui: ui);
+    check(t: t, ok: quiet.count == 0, what: "...and neither write raised an event (${quiet.count})");
+    check(t: t, ok: ui.elementValue(handle: meter) == 0.0, what: "a non-control's value is 0");
+
+    section(what: "the seam: classes and inline properties");
+    ui.setElementClass(handle: meter, name: "wide", on: true);
+    ui.update();
+    UiRect wide = ui.elementRect(handle: meter);
+    check(t: t, ok: wide.width == 300.0, what: "a class switches a document rule on (${wide.width} wide)");
+    check(t: t, ok: ui.setElementProperty(handle: meter, name: "width", value: "150dp"), what: "an inline property in dp is taken");
+    ui.update();
+    UiRect narrow = ui.elementRect(handle: meter);
+    check(t: t, ok: narrow.width == 150.0, what: "...and wins over the class (${narrow.width} wide)");
+    ui.setElementProperty(handle: meter, name: "width", value: "");
+    ui.setElementClass(handle: meter, name: "wide", on: false);
+    ui.update();
+    UiRect back = ui.elementRect(handle: meter);
+    check(t: t, ok: back.width == 100.0, what: "removing both puts the document's width back (${back.width})");
+
+    section(what: "the seam: a rewrite, and re-binding what it wrote");
+    int32 row1 = ui.bindElement(elementId: "row1");
+    string escaped = escapeText(raw: "<b>Sam</b> & co");
+    string rowsRml = "<p id='row1'>x</p><p id='row2'>${escaped}</p>";
+    ui.setInnerRml(handle: rows, rml: rowsRml);
+    ui.update();
+    int32 row2 = ui.bindElement(elementId: "row2");
+    int32 row1again = ui.bindElement(elementId: "row1");
+    check(t: t, ok: row2 > 0 && row1again == row1, what: "after a rewrite a new id binds and an old one keeps its handle");
+    UiRect r2 = ui.elementRect(handle: row2);
+    check(t: t, ok: r2.height > 0.0, what: "...and the new row has a box (${r2.height} high)");
+    check(t: t, ok: ui.bindElement(elementId: "rows") == rows, what: "...and the container's own handle never moved");
+
+    legTests(t: t, ui: ui, first: first, field: field);
+
+    section(what: "the seam: closing the document, and one from text");
+    ui.closeDocument();
+    ui.update();
+    check(t: t, ok: ui.bindElement(elementId: "first") == 0 && !ui.focusHeld(), what: "with no document nothing binds and nothing holds the ring");
+    Seen none = collect(ui: ui);
+    check(t: t, ok: none.count == 0, what: "...and nothing is queued");
+    string text = seamText();
+    check(t: t, ok: ui.loadDocumentText(rml: text), what: "a document loads from text");
+    int32 only = ui.bindElement(elementId: "only");
+    check(t: t, ok: only > 0 && ui.bindElement(elementId: "first") == 0, what: "...its element binds, and the old document's do not");
+    ui.update();
+    check(t: t, ok: ui.focusedElement() == only, what: "...and its autofocus holds the ring");
+    ui.close();
+    check(t: t, ok: !ui.isOpen(), what: "close() closes it");
+}

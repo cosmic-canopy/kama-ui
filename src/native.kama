@@ -1,0 +1,457 @@
+file @compileFor(!ARCH_WASM32);
+// ui::native — the native UI backend: RmlUi through @kama/rmlui, which records draw commands rather than drawing.
+//
+// From the-mallow-man's ui/src/native.kama (E7b/E7c), which called its own C++ shim (tmm_ui_native.cpp) directly. That
+// shim is now @kama/rmlui, made general; this file is the SEAM'S POLICY on top of it, which the shim used to carry in
+// C++:
+//   - one RmlUi context per UiContext, one document at a time, shown with its `autofocus` element focused;
+//   - `bindElement` is a @kama/rmlui BINDING listening for click and change — the same handle for the same id while the
+//     document lives, re-finding its element (and moving its listeners) after a rewrite;
+//   - the keyboard is the GLFW-numbered subset in types.kama, translated here to RmlUi's own keys, with "a navigation key
+//     with nothing focused lands on the first tab element" (E7b);
+//   - `update` steps the clock 1/60 s; writes into controls are quiet.
+//
+// ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
+// would reach the wasm leg too; the whole-unit gate (kama 0.9.150) keeps it — and its import of @kama/rmlui — out. The
+// mirror of this line is what lets web.kama import `std::fs` and `ui::uidoc`.
+//
+// A `value`, not a `resource`: every field is a handle into state RmlUi owns, there is one UI per screen stack, and
+// `close()` is explicit. Every method tolerates `ready == 0` (a UI that would not start is not worth failing a game over).
+
+import {
+    UiHost, UiCommand, UiCommandKind, UiTexture, UiEvent, UiEventKind, UiRect,
+    UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT, UI_KEY_DOWN, UI_KEY_UP,
+    UI_KEY_HOME, UI_KEY_END,
+    rmlui::RmlUi, rmlui::RmlUiError, rmlui::Context, rmlui::Document, rmlui::Element, rmlui::Binding, rmlui::Event,
+    rmlui::EventType, rmlui::Command, rmlui::CommandKind, rmlui::Texture, rmlui::Rect, rmlui::BoxArea, rmlui::Modal,
+    rmlui::Focus, rmlui::LISTEN_BUBBLE,
+    rmlui::KEY_RETURN, rmlui::KEY_TAB, rmlui::KEY_BACKSPACE, rmlui::KEY_DELETE, rmlui::KEY_RIGHT, rmlui::KEY_LEFT,
+    rmlui::KEY_DOWN, rmlui::KEY_UP, rmlui::KEY_HOME, rmlui::KEY_END, rmlui::MOD_NONE, rmlui::MOD_SHIFT,
+    std::collections::ConstView,
+    std::fmt::parse, std::fmt::ParseError,
+};
+export { UiContext };
+
+// UI_KEY_* (GLFW's numbers) -> RmlUi's KeyIdentifier, or 0 for a key outside the subset — which is DROPPED: the program
+// holds every key on its way past and forwards only these, so the document never competes with a rebind screen or a
+// verb reading raw keys.
+fn int32 rmlKey(int32 code)
+{
+    if (code == UI_KEY_ENTER) { return KEY_RETURN; }
+    if (code == UI_KEY_TAB) { return KEY_TAB; }
+    if (code == UI_KEY_RIGHT) { return KEY_RIGHT; }
+    if (code == UI_KEY_LEFT) { return KEY_LEFT; }
+    if (code == UI_KEY_DOWN) { return KEY_DOWN; }
+    if (code == UI_KEY_UP) { return KEY_UP; }
+    // The caret's keys, for a focused text field. Inert on a button.
+    if (code == UI_KEY_BACKSPACE) { return KEY_BACKSPACE; }
+    if (code == UI_KEY_DELETE) { return KEY_DELETE; }
+    if (code == UI_KEY_HOME) { return KEY_HOME; }
+    if (code == UI_KEY_END) { return KEY_END; }
+    return 0;
+}
+
+fn bool navKey(int32 code)
+{
+    return code == UI_KEY_TAB || code == UI_KEY_UP || code == UI_KEY_DOWN || code == UI_KEY_LEFT || code == UI_KEY_RIGHT;
+}
+
+fn UiCommandKind kindOf(CommandKind k)
+{
+    return match (k) {
+        case Draw:           UiCommandKind::Draw;
+        case ClipEnable:     UiCommandKind::ClipEnable;
+        case ClipDisable:    UiCommandKind::ClipDisable;
+        case ClipSet:        UiCommandKind::ClipSet;
+        case ClipSetInverse: UiCommandKind::ClipSetInverse;
+        case ClipIntersect:  UiCommandKind::ClipIntersect;
+    };
+}
+
+type value UiContext implements UiHost {
+    int32 ready;
+    RmlUi lib;
+    Context ctx;
+    Document doc;
+
+    // Start RmlUi, make a context `width` x `height` framebuffer pixels, and load `fontPath` ("" for none yet) as the
+    // first face. A UI that will not start leaves `isOpen()` false, and every method then does nothing.
+    public unsafe ctor open(int32 width, int32 height, const ref string fontPath)
+    {
+        this.ready = 0;
+        this.lib = RmlUi.none();
+        this.ctx = Context.fromHandle(handle: 0);
+        this.doc = Document.fromHandle(handle: 0);
+        Result<RmlUi, RmlUiError> started = RmlUi.start();
+        match (started) {
+            case Err(error: e): { }
+            case Ok(value: u): {
+                this.lib = u;
+                string name = "";
+                Result<Context, RmlUiError> made = Context.create(ui: u, name: name, width: width, height: height);
+                match (made) {
+                    case Err(error: e): { this.lib.shutdown(); }
+                    case Ok(value: c): {
+                        this.ctx = c;
+                        this.ready = 1;
+                        if (!fontPath.isEmpty()) { this.lib.loadFontFace(path: fontPath, fallback: false); }
+                    }
+                };
+            }
+        };
+    }
+
+    public fn bool isOpen() { return this.ready != 0; }
+
+    public unsafe fn void loadFont(const ref string path, bool fallback)
+    {
+        if (this.ready == 0) { return; }
+        this.lib.loadFontFace(path: path, fallback: fallback);
+    }
+
+    public unsafe fn void provideImage(const ref string name, ConstView<uint8> rgba, int32 width, int32 height)
+    {
+        if (this.ready == 0) { return; }
+        this.lib.provideImage(name: name, rgba: rgba, width: width, height: height);
+    }
+
+    public unsafe fn void setImageRewrite(const ref string nativeExt, const ref string webExt) { }
+
+    // ⚠️ ONE DOCUMENT AT A TIME: the previous one is closed here, because RmlUi renders every SHOWN document in a
+    // context, so two loads without a close would draw one screen over the other. Its events go with it — a queued
+    // click names an element that is going.
+    unsafe fn void closeCurrent()
+    {
+        if (this.doc.isLive()) { this.doc.close(); }
+        this.doc = Document.fromHandle(handle: 0);
+        this.ctx.clearEvents();
+    }
+
+    public unsafe fn bool loadDocument(const ref string path)
+    {
+        if (this.ready == 0) { return false; }
+        this.closeCurrent();
+        Optional<Document> d = this.ctx.loadDocument(path: path);
+        return this.adopt(d: d);
+    }
+
+    public unsafe fn bool loadDocumentText(const ref string rml)
+    {
+        if (this.ready == 0) { return false; }
+        this.closeCurrent();
+        string url = "[ui document]";
+        Optional<Document> d = this.ctx.loadDocumentRml(rml: rml, sourceUrl: url);
+        return this.adopt(d: d);
+    }
+
+    unsafe fn bool adopt(Optional<Document> d)
+    {
+        match (d) {
+            case None: { return false; }
+            case Some(value: loaded): { this.doc = loaded; }
+        };
+        this.doc.show(modal: Modal::None, focus: Focus::Auto);
+        return true;
+    }
+
+    // The element a handle names now, re-found after a rewrite (a binding's job), or None.
+    unsafe fn Optional<Element> bound(int32 handle)
+    {
+        if (this.ready == 0 || handle == 0) { return Optional::None; }
+        Binding b = Binding.fromHandle(handle: handle);
+        return b.element();
+    }
+
+    public unsafe fn void setInnerRml(int32 handle, const ref string rml)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) { case Some(value: el): { el.setInnerRml(rml: rml); } case None: { } };
+    }
+
+    public unsafe fn void setSize(int32 width, int32 height)
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.setDimensions(width: width, height: height);
+    }
+
+    // ⚠️ A NO-OP, AND DELIBERATELY NOT WIRED TO ANYTHING: the renderer draws the recorded geometry under its own
+    // letterbox transform, so feeding the same offsets here would apply them twice. It exists because a backend that
+    // owns real elements has no other way to be told it is off screen.
+    public unsafe fn void setViewport(float32 offsetX, float32 offsetY, float32 scale, bool visible) { }
+
+    public unsafe fn void update()
+    {
+        if (this.ready == 0) { return; }
+        float64 now = this.lib.time();
+        this.lib.setTime(seconds: now + 1.0 / 60.0);
+        this.ctx.update();
+    }
+
+    public unsafe fn void updateAt(float64 seconds)
+    {
+        if (this.ready == 0) { return; }
+        this.lib.setTime(seconds: seconds);
+        this.ctx.update();
+    }
+
+    public unsafe fn void render()
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.render();
+    }
+
+    public unsafe fn int32 commandCount()
+    {
+        if (this.ready == 0) { return 0; }
+        return this.ctx.commandCount();
+    }
+
+    public unsafe fn UiCommand command(int32 index)
+    {
+        UiCommand u = UiCommand.empty();
+        if (this.ready == 0) { return u; }
+        Command c = this.ctx.command(index: index);
+        u.kind = kindOf(k: c.kind);
+        u.vertices = c.vertices;
+        u.vertexCount = c.vertexCount;
+        u.indices = c.indices;
+        u.indexCount = c.indexCount;
+        u.texture = c.texture;
+        u.translateX = c.translateX;
+        u.translateY = c.translateY;
+        u.scissorEnabled = c.scissorEnabled;
+        u.scissorX = c.scissorX;
+        u.scissorY = c.scissorY;
+        u.scissorWidth = c.scissorWidth;
+        u.scissorHeight = c.scissorHeight;
+        u.transformed = c.transformed;
+        u.transform = c.transform;
+        return u;
+    }
+
+    public unsafe fn int32 textureCount()
+    {
+        if (this.ready == 0) { return 0; }
+        return this.lib.textureCount();
+    }
+
+    public unsafe fn UiTexture texture(int32 handle)
+    {
+        if (this.ready == 0) { return UiTexture.empty(); }
+        Texture t = this.lib.texture(handle: handle);
+        return UiTexture.make(pixels: t.pixels, width: t.width, height: t.height);
+    }
+
+    public unsafe fn int32 textureGeneration(int32 handle)
+    {
+        if (this.ready == 0) { return 0; }
+        Texture t = this.lib.texture(handle: handle);
+        return t.generation;
+    }
+
+    public unsafe fn void mouseMove(float32 x, float32 y)
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.mouseMove(x: x, y: y, mods: MOD_NONE);
+    }
+
+    public unsafe fn void mouseButton(int32 button, bool down)
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.mouseButton(button: button, down: down, mods: MOD_NONE);
+    }
+
+    public unsafe fn void mouseWheel(float32 delta)
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.mouseWheel(dx: 0.0, dy: delta, mods: MOD_NONE);
+    }
+
+    public unsafe fn void key(int32 code, bool down, bool shift)
+    {
+        if (this.ready == 0) { return; }
+        int32 k = rmlKey(code: code);
+        if (k == 0) { return; }
+        int32 mods = MOD_NONE;
+        if (shift) { mods = MOD_SHIFT; }
+
+        // E7b: nothing to move FROM (the document itself holds focus, after a click on the background, or nothing does)
+        // — put the ring on the first tab element and let this press be that, rather than lose it.
+        if (down && navKey(code: code) && !this.focusHeld()) {
+            Optional<Element> first = this.doc.nextTab(from: this.doc.root(), forward: !shift, wrap: true);
+            match (first) {
+                case Some(value: f): { f.focus(visible: true); return; }
+                case None: { }
+            };
+        }
+        this.ctx.key(key: k, down: down, mods: mods);
+    }
+
+    // ⚠️ THE DOCUMENT ITSELF IS A FOCUS TARGET AND MUST NOT COUNT: with nothing focused RmlUi reports the document, and
+    // treating that as "the ring holds something" would suppress every screen verb forever. `Document.focused` already
+    // answers None for it. A DISABLED control still counts, deliberately: a ring parked on it is a ring the player sees.
+    public unsafe fn bool focusHeld()
+    {
+        if (this.ready == 0) { return false; }
+        Optional<Element> f = this.doc.focused();
+        return match (f) { case Some(value: e): true; case None: false; };
+    }
+
+    // ⚠️ WITHOUT IT A PAD CANNOT REACH THE DOCUMENT: RmlUi's TAB walk does nothing while the document is unfocused, so
+    // navigation used to work only after a mouse click (friendly-fire-department, from a play session).
+    public unsafe fn void focusDocument()
+    {
+        if (this.ready == 0) { return; }
+        Element root = this.doc.root();
+        root.focus(visible: false);
+    }
+
+    public unsafe fn int32 bindElement(const ref string elementId)
+    {
+        if (this.ready == 0) { return 0; }
+        Optional<Binding> b = this.doc.bind(id: elementId);
+        return match (b) {
+            case None: 0;
+            case Some(value: binding): {
+                // Idempotent per (event, flags), so binding twice listens once — and a click is never reported twice.
+                string click = "click";
+                string change = "change";
+                binding.listen(event: click, flags: LISTEN_BUBBLE);
+                binding.listen(event: change, flags: LISTEN_BUBBLE);
+                := binding.handle();
+            }
+        };
+    }
+
+    public unsafe fn UiRect elementRect(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) {
+            case None: UiRect.empty();
+            case Some(value: el): {
+                Rect r = el.rect(area: BoxArea::Border);
+                := UiRect.make(x: r.x, y: r.y, width: r.width, height: r.height);
+            }
+        };
+    }
+
+    // RmlUi formats a range's value as decimal text, so this is a round trip through a string; a value that does not
+    // parse reads as 0 rather than as whatever the parser felt like.
+    public unsafe fn float32 elementValue(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        Optional<string> v = match (e) { case None: Optional::None; case Some(value: el): el.value(); };
+        string text = match (v) { case None: ""; case Some(value: s): copy s; };
+        if (text.isEmpty()) { return 0.0; }
+        Result<float32, ParseError> r = parse::<float32>(s: text);
+        return match (r) { case Ok(value: f): f; case Err(error: x): 0.0; };
+    }
+
+    public unsafe fn void setElementValue(int32 handle, float32 value)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        string text = "${value}";
+        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
+    }
+
+    public unsafe fn void setElementClass(int32 handle, const ref string name, bool on)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) { case Some(value: el): { el.setClass(name: name, on: on); } case None: { } };
+    }
+
+    public unsafe fn bool setElementProperty(int32 handle, const ref string name, const ref string value)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) { case Some(value: el): el.setProperty(name: name, value: value); case None: false; };
+    }
+
+    public unsafe fn string elementText(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        Optional<string> v = match (e) { case None: Optional::None; case Some(value: el): el.value(); };
+        return match (v) { case None: ""; case Some(value: s): copy s; };
+    }
+
+    public unsafe fn void setElementText(int32 handle, const ref string text)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
+    }
+
+    // Clicks and changes heard through bindings; anything else in the queue is skipped.
+    public unsafe fn Optional<UiEvent> pollEvent()
+    {
+        if (this.ready == 0) { return Optional::None; }
+        while (true) {
+            Optional<Event> next = this.ctx.pollEvent();
+            match (next) {
+                case None: { return Optional::None; }
+                case Some(value: ev): {
+                    if (!ev.binding.isNone()) {
+                        bool click = match (ev.type) { case Click: true; case _: false; };
+                        bool change = match (ev.type) { case Change: true; case _: false; };
+                        if (click) { return Optional::Some(value: UiEvent.make(kind: UiEventKind::Click, element: ev.binding.handle())); }
+                        if (change) { return Optional::Some(value: UiEvent.make(kind: UiEventKind::Change, element: ev.binding.handle())); }
+                    }
+                }
+            };
+        }
+        return Optional::None;
+    }
+
+    public unsafe fn void typeChar(int32 codepoint)
+    {
+        if (this.ready == 0 || codepoint < 0) { return; }
+        this.ctx.text(codepoint: codepoint);
+    }
+
+    public unsafe fn bool focusElement(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) { case Some(value: el): el.focus(visible: true); case None: false; };
+    }
+
+    public unsafe fn int32 focusedElement()
+    {
+        if (this.ready == 0) { return 0; }
+        Optional<Element> f = this.doc.focused();
+        Optional<Binding> b = match (f) { case None: Optional::None; case Some(value: e): this.doc.bindingOf(element: e); };
+        return match (b) { case None: 0; case Some(value: x): x.handle(); };
+    }
+
+    public unsafe fn bool textFocused()
+    {
+        if (this.ready == 0) { return false; }
+        Optional<Element> f = this.doc.focused();
+        Element e = Element.fromHandle(handle: 0);
+        match (f) { case None: { return false; } case Some(value: x): { e = x; } };
+        string tag = e.tag();
+        if (tag == "textarea") { return true; }
+        if (tag != "input") { return false; }
+        // RmlUi's default for an <input> with no type is "text", as a browser's is.
+        Optional<string> t = e.attribute(name: "type");
+        string kind = match (t) { case None: "text"; case Some(value: s): copy s; };
+        return kind == "text" || kind == "password";
+    }
+
+    public unsafe fn void setDpRatio(float32 ratio)
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.setDpRatio(ratio: ratio);
+    }
+
+    public unsafe fn void closeDocument()
+    {
+        if (this.ready == 0) { return; }
+        this.closeCurrent();
+    }
+
+    public unsafe fn void close()
+    {
+        if (this.ready == 0) { return; }
+        this.ctx.destroy();
+        this.lib.shutdown();
+        this.ready = 0;
+    }
+}

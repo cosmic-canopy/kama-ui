@@ -1,0 +1,179 @@
+// ui::host — the contract both UI backends satisfy.
+//
+// From the-mallow-man's ui/src/host.kama (E7b/E7c, 2026-10-07), itself friendly-fire-department@a676ca3's, with the
+// game-specific narrative generalised and three additions marked below (`loadDocumentText`, `setImageRewrite`, and
+// `provideImage` taking a view rather than a raw pointer).
+//
+// ONE SET OF DOCUMENTS, TWO BACKENDS. `UiContext` is declared twice — in native.kama over @kama/rmlui and in web.kama
+// over the browser's own DOM — under complementary `@compileFor` gates, so exactly one survives per build and a caller
+// writes the bare type name with no erasure and no vtable. Nothing would notice the two drifting, which is what this
+// contract is for: each declaration is checked against it where it is written, so a backend that renames a method or a
+// parameter label fails at its own definition rather than at a caller that only compiles on the other target.
+//
+// `for value`: a `UiContext` is a copyable name for a UI whose state lives on the other side of the seam (RmlUi's C++,
+// or the page's DOM), with an explicit `close`. That is what lets a program keep it in a module `static`, which may own
+// nothing — the-mallow-man keeps half a dozen.
+//
+// THE UI RENDERS NOTHING. The native backend produces DRAW COMMANDS for the program's renderer (`render`, `command`,
+// `texture`); the web backend's document is real DOM elements the browser paints, so it produces none. That is what lets
+// one contract cover both — and it is why `render()` fills a list rather than putting pixels anywhere.
+//
+// EVERY STRING PARAMETER IS `const ref string`: the methods only read them, and `const ref` is what lets a literal be
+// passed straight in. Take a literal wherever you can; bind a local only when the string is computed.
+
+import { UiCommand, UiTexture, UiEvent, UiRect, std::collections::ConstView };
+export { UiHost };
+
+type contract UiHost for value {
+    // Load another face after `open`. ⚠️ `fallback` IS NOT COSMETIC: a face missing a codepoint draws NOTHING for it
+    // natively — not a box, not a blank — so load display faces first and a broad face last, as the fallback.
+    // A face that will not load is reported (natively, in RmlUi's log), not fatal. A no-op on the web, whose faces come
+    // from the page's own `@font-face` rules.
+    fn void loadFont(const ref string path, bool fallback);
+
+    // Load one document from a file and show it, focusing its `autofocus` element if it has one. False when it could not
+    // be read or parsed. ⚠️ IT REPLACES the current document, and EVERY HANDLE `bindElement` returned dies with the old
+    // one: re-bind after every switch. On the web the file is read from the program's virtual filesystem (an emcc
+    // `--embed-file`) and rewritten to HTML by `ui::uidoc::rmlToHtml`.
+    fn bool loadDocument(const ref string path);
+
+    // ADDED: the same, from RML text the program holds (generated, embedded, or a test's). Same rules as `loadDocument`.
+    fn bool loadDocumentText(const ref string rml);
+
+    // Replace a bound element's CONTENT with markup — a variable number of rows, per-row styling — rather than text.
+    // ⚠️ IT DESTROYS THE CHILDREN: bind containers, write into them, and RE-BIND WHAT YOU WROTE AFTER THE WRITE. Both
+    // backends repair a re-bind (the same handle comes back, naming the new element), and a handle bound to the
+    // container itself is untouched. ⚠️ IT IS A PARSER on both legs (RmlUi's, and `innerHTML`): text another person typed
+    // goes through `ui::uidoc::escapeText` first — on the web an unescaped `<` is script injection, not a mangled screen.
+    fn void setInnerRml(int32 handle, const ref string rml);
+
+    // Hand over the pixels for one `<img>` a document will ask for. PIXELS, NOT A PATH: the backend decodes no image
+    // format, and on the web nothing should read the file at all (the browser fetches its own copy). RGBA8,
+    // PREMULTIPLIED, tightly packed, width*height*4 bytes, COPIED. ⚠️ `name` is what RmlUi resolves the `src` to: a
+    // leading '/' is stripped, anything else is joined onto the document's directory — so `src="/assets/ui/badge.png"`
+    // is provided as `assets/ui/badge.png`. ⚠️⚠️ PROVIDE BEFORE THE FIRST `loadDocument` THAT SHOWS IT: RmlUi resolves
+    // an image during the load and records a miss permanently. A no-op on the web.
+    // CHANGED: a `ConstView<uint8>` (was a raw `UnsafeConstPtr<uint8>`), so the length is checked.
+    fn void provideImage(const ref string name, ConstView<uint8> rgba, int32 width, int32 height);
+
+    // ADDED: when native and web read different FILES for one picture (natively a format the program decodes, on the
+    // web one the browser does), the web leg rewrites every `<img src>` ending in `nativeExt` to end in `webExt` as it
+    // inserts markup — documents and `setInnerRml` alike. ("" turns it off.) Both legs agree on the directory; only the
+    // extension differs. A no-op natively. (the-mallow-man: `.pam` natively, `.webp` on the web.)
+    fn void setImageRewrite(const ref string nativeExt, const ref string webExt);
+
+    // Size in FRAMEBUFFER PIXELS, never logical points (on a Retina display or a browser with devicePixelRatio > 1 the
+    // two differ). The web leg sizes its stage once, at `open`; this is a no-op there.
+    fn void setSize(int32 width, int32 height);
+
+    // Where the document sits on screen, and whether it is on screen at all: a letterbox offset and scale in
+    // framebuffer pixels. ⚠️ `visible` IS WHAT THE WEB HALF NEEDS: natively a screen goes away because nobody draws its
+    // commands, but a backend that OWNS elements has no such signal. A no-op natively (the renderer applies the same
+    // offsets to the recorded geometry).
+    fn void setViewport(float32 offsetX, float32 offsetY, float32 scale, bool visible);
+
+    // Advance layout and animations, then rebuild the command list. Once per frame, in this order. `update` steps the
+    // clock a fixed 1/60 s (deterministic, for headless runs); `updateAt` takes a monotonic clock in seconds, so hover
+    // transitions and the caret's blink run in real time. Both no-ops on the web, which lays out and paints itself.
+    fn void update();
+    fn void updateAt(float64 seconds);
+    fn void render();
+
+    // The recorded commands and textures, valid between one `render()` and the next `update`. None on the web.
+    fn int32 commandCount();
+    fn UiCommand command(int32 index);
+    fn int32 textureCount();
+    fn UiTexture texture(int32 handle);
+
+    // Which incarnation of a texture slot this is, from 1. ⚠️ A handle is an INDEX and a released slot is recycled, so
+    // the same handle can come back holding a different atlas — and neither the size nor the data pointer can tell you
+    // (two glyph atlases are often the same size; a freed buffer is often reallocated at the same address). A renderer
+    // mapping these to GPU textures must key its upload on this.
+    fn int32 textureGeneration(int32 handle);
+
+    // The pointer, in framebuffer pixels. Buttons: 0 left, 1 right, 2 middle. The wheel in NOTCHES, positive down.
+    // ⚠️ THE POINTER POSITION DECIDES WHAT SCROLLS: feed the cursor before the wheel. All three are no-ops on the web,
+    // where the browser hit-tests, hovers and scrolls from the page's own pointer events (forwarding a second copy would
+    // scroll twice).
+    fn void mouseMove(float32 x, float32 y);
+    fn void mouseButton(int32 button, bool down);
+    fn void mouseWheel(float32 delta);
+
+    // ---- the keyboard, which is a focus ring and a caret ----
+    //
+    // `code` is a UI_KEY_* (GLFW's numbering); the subset is in types.kama and anything else is dropped. The PROGRAM
+    // gets every key first and forwards this subset — so a rebind screen or a game verb reading raw keys never competes
+    // with the document. TAB walks the focusable elements, the arrows follow each element's `nav-*` (natively) or document
+    // order (web), and ENTER CLICKS the focused element — so it arrives at `pollEvent` as an ordinary click and no
+    // screen's handler changes.
+    //
+    // ⚠️ A NAVIGATION KEY WITH NOTHING FOCUSED LANDS ON THE FIRST FOCUSABLE ELEMENT rather than being lost, on both legs.
+    //
+    // ⚠️ ON THE WEB this assumes the page swallows the keys (preventDefault) before the DOM can act on them — which a game
+    // does so SPACE and the arrows do not scroll the page — and moves the focus itself; releases are dropped there.
+    fn void key(int32 code, bool down, bool shift);
+
+    // Is the focus ring on a control the ring can reach? FALSE when nothing is focused, when only the document itself
+    // is (RmlUi) or `<body>` is (a browser), and when no document is up. What lets ONE button mean both "press this" (the
+    // ring holds something) and the screen's own verb (it does not).
+    fn bool focusHeld();
+
+    // Give the live document keyboard focus, so a pad can navigate without a mouse click first. Idempotent.
+    fn void focusDocument();
+
+    // ---- elements ----
+
+    // Name an element ONCE and get an integer handle (>= 1); every event afterwards carries it. 0 when no element has
+    // that id. Binding the same id again yields the SAME handle — and repairs it after a `setInnerRml` replaced the
+    // element — while the document lives.
+    fn int32 bindElement(const ref string elementId);
+
+    // Where a bound element ended up after layout, in framebuffer pixels.
+    fn UiRect elementRect(int32 handle);
+
+    // A bound form control's value as a NUMBER (0.0 for an unknown handle, a non-control, or a value that does not
+    // parse), and setting it. A float crosses as itself on both legs; no translation table is needed.
+    fn float32 elementValue(int32 handle);
+    fn void setElementValue(int32 handle, float32 value);
+
+    // Switch one class on a bound element; a document rule on the class does the rest (hiding a row, greying a
+    // control). In place — no subtree is destroyed — which is why it is safe where a rewrite is not.
+    fn void setElementClass(int32 handle, const ref string name, bool on);
+
+    // One inline style property ("width", "43%"; "" removes it) — a meter drawn without rewriting markup. True when
+    // the backend took it.
+    fn bool setElementProperty(int32 handle, const ref string name, const ref string value);
+
+    // A bound text control's value, and setting it. ⚠️ NO CHANGE EVENT EITHER WAY, ON BOTH LEGS (nor for
+    // `setElementValue`): a program writing state into a control is not a person editing it, and only a person's edit
+    // reaches `pollEvent`. (RmlUi raises one for a range; the native leg drops it. A browser raises none.)
+    fn string elementText(int32 handle);
+    fn void setElementText(int32 handle, const ref string text);
+
+    // Pop one event, or None when the queue is drained. POLLED, never pushed: drain it once per frame, as input is.
+    // Clicks and changes on bound elements. ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
+    // press can be two events (the button's, then the container's) — on both legs.
+    fn Optional<UiEvent> pollEvent();
+
+    // ---- focus and text entry ----
+
+    // One typed character, as a codepoint from the platform's character event (after the keyboard layout). Natively it
+    // goes to the focused text field; on the web the browser types into its own <input>, so this is a no-op there.
+    fn void typeChar(int32 codepoint);
+
+    // Put the ring on a bound element (true when it took it), and ask which bound element holds it (0 for none).
+    fn bool focusElement(int32 handle);
+    fn int32 focusedElement();
+
+    // The ring is in a text control (<input type="text|password">, <textarea>): a printable key is typing, not a verb.
+    fn bool textFocused();
+
+    // RmlUi's `dp` unit: one dp is `ratio` framebuffer pixels, so text rasterises at its final size. A no-op on the web,
+    // where `dp` became `px` in the stage and the viewport transform carries the scale.
+    fn void setDpRatio(float32 ratio);
+
+    // No document at all — every handle dies, as at `loadDocument`. Natively the close lands at the next update.
+    fn void closeDocument();
+
+    fn void close();
+}

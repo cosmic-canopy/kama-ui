@@ -1,0 +1,52 @@
+file @compileFor(ARCH_WASM32);
+// The web leg's half of the suite: a click injected the way a person's arrives — the browser's own hit test
+// (document.elementFromPoint) and a bubbling MouseEvent, from tests/web/kama_ui_test.js — and the verdict written where
+// a headless browser's --dump-dom reads it.
+
+import {
+    Tally, check, section,
+    core::println,
+    ui::UiContext, ui::UiRect,
+};
+export { fontPath, injectClick, legTests, report };
+
+extern "kama_ui_test.h";
+extern fn int32 kama_ui_test_click_at(float32 x, float32 y);
+extern fn void  kama_ui_test_report(int32 run, int32 failed);
+extern fn int32 kama_ui_test_attr_ends(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> attr, UnsafeConstPtr<cchar> suffix);
+
+// Ignored on this leg: the browser takes its faces from the page's @font-face.
+fn string fontPath() { return ""; }
+
+unsafe fn bool injectClick(ref UiContext ui, float32 x, float32 y)
+{
+    return kama_ui_test_click_at(x: x, y: y) != 0;
+}
+
+unsafe fn bool attrEnds(const ref string id, const ref string attr, const ref string suffix)
+{
+    return kama_ui_test_attr_ends(id: id.cstr(), attr: attr.cstr(), suffix: suffix.cstr()) != 0;
+}
+
+fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
+{
+    section(what: "web: the document is real DOM");
+    check(t: t, ok: ui.commandCount() == 0 && ui.textureCount() == 0, what: "the browser paints: no commands, no textures");
+    check(t: t, ok: attrEnds(id: "pic", attr: "src", suffix: "/img/dot.webp"),
+          what: "setImageRewrite turned the document's /img/dot.pam into /img/dot.webp before the browser fetched it");
+    check(t: t, ok: attrEnds(id: "first", attr: "id", suffix: "first"), what: "the bound button is an element with its id");
+}
+
+unsafe fn int32 report(ref Tally t)
+{
+    int32 code = 0;
+    if (t.failed != 0) {
+        println(s: "ui tests (web): ${t.failed} of ${t.run} failed");
+        code = 1;
+    } else {
+        println(s: "ui tests (web): OK, ${t.run} checks");
+    }
+    // Last, so what the page sends back includes every line printed above it.
+    kama_ui_test_report(run: t.run, failed: t.failed);
+    return code;
+}
