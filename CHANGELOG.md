@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.1] — unreleased
+## [0.2.1] — 2026-10-14
 
 Built on @kama/rmlui 0.1.1 (`"@kama/rmlui": { "version": "^0.1.1" }`), which adds element scrolling, quiet attribute
 writes, and a range `change` only when the value moved. The legs now have no known difference in what reaches
