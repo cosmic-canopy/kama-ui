@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-10-14
 
 Everything else a tool page needs, in one release: a list that grows and is trimmed in place, keys and shortcuts,
 focus, double clicks, drag and drop, tooltips, the clipboard, and plain text. Built on @kama/rmlui 0.2.0
