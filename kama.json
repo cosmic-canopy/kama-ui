@@ -18,8 +18,7 @@
     "uidoc": { "visibility": "public" }
   },
   "dependencies": {
-    "@kama/rmlui": { "path": "../kama-rmlui" },
-    "@kama/freetype": { "path": "../kama-freetype" }
+    "@kama/rmlui": { "version": "^0.1.0" }
   },
   "cincludes": ["src"],
   "jsLibraries": ["src/kama_ui_web.js"],

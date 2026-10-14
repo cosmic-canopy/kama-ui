@@ -4,8 +4,8 @@
 # under AddressSanitizer with leak checking (Linux; ASAN=0 skips it). `kama` is taken from $KAMA or the PATH. Runs from
 # the package root, which the suite's fixture and font paths are relative to.
 #
-# Needs @kama/rmlui and @kama/freetype beside this repository (../kama-rmlui, ../kama-freetype). Both vendor their C and
-# C++, which kama compiles, so there is nothing to fetch or build first. The browser half is tools/test-web.sh.
+# @kama/rmlui and @kama/freetype come from the registry (kama pkg install). Both vendor their C and C++, which kama
+# compiles, so there is nothing else to fetch or build first. The browser half is tools/test-web.sh.
 #
 # AddressSanitizer is a compiler wrapper rather than a manifest entry: kama.json has no per-build-type `cflags`, and a
 # `select.TARGET` entry needs a fixed triple. So `cc`/`c++` are wrapped to add the flag to every compile and the link.

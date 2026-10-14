@@ -9,8 +9,8 @@ the contract. These are the working rules.
   `src/kama_ui_web.js`) each declare `UiContext implements UiHost`. A change to the contract changes both files in
   the same commit. `kama check kama.json` analyses both configurations.
 - **The gate is BOTH test scripts.** `tools/test.sh` runs natively, in debug, in release and under AddressSanitizer
-  (Linux). It needs `../kama-rmlui` and `../kama-freetype` checked out; both vendor their sources, so there is
-  nothing to build first. `tools/test-web.sh` uses emcc (`EMSDK`, default `~/emsdk`) and headless Firefox, with the
+  (Linux). @kama/rmlui and @kama/freetype come from the registry; both vendor their sources, so
+  there is nothing to build first. `tools/test-web.sh` uses emcc (`EMSDK`, default `~/emsdk`) and headless Firefox, with the
   verdict POSTed back to `tools/web-test-server.py`. A change to `src/` is not proven until both pass. `web.kama`
   and the JS compile only on the web leg, so the native script cannot catch a break there.
 - **The seam suite is shared** (`tests/src/seam_test.kama`). Put a check there unless the legs legitimately differ,
@@ -23,7 +23,6 @@ the contract. These are the working rules.
   must remember lives on the other side of the seam: `@kama/rmlui`'s bindings natively, `$KamaUi` on the web.
 - **`ui::uidoc` is pure** (string in, string out). Its suite runs on both legs. A new RCSS/CSS disagreement goes there,
   with a check, never into a per-screen special case.
-- **This package depends on `../kama-rmlui` by relative path, and restates `../kama-freetype`.** kama requires every
-  consumer to list its dependencies' path dependencies, at the top level. So `kama.json` lists `@kama/freetype`, and
-  `tests/kama.json` lists all three. At publish time the path entries become `^0.1.0` registry versions, and the
-  FreeType line goes (README.md, "Publishing").
+- **This package depends on `@kama/rmlui` `^0.1.0` from the registry** (FreeType comes with it). To work against
+  checkouts, override them in a gitignored `kama.local.json` (`"overrides": {"@kama/rmlui": {"path":
+  "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one.

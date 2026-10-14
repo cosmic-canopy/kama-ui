@@ -5,7 +5,7 @@ contract**:
 
 - **In a browser, the browser's own DOM.** The documents become real elements over the canvas, painted by the
   browser. No JavaScript library is used: only the DOM and CSS, through about 500 lines of emcc `--js-library` glue.
-- **Natively, RmlUi** through [`@kama/rmlui`](../kama-rmlui). It records draw commands for the program's own renderer.
+- **Natively, RmlUi** through [`@kama/rmlui`](https://github.com/cosmic-canopy/kama-rmlui). It records draw commands for the program's own renderer.
 
 The program writes `ui::UiContext` and never knows which backend it has. Each build has exactly one: `native.kama` and
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
@@ -69,21 +69,14 @@ alone:
 "dependencies": { "@kama/ui": { "version": "^0.1.0" } }
 ```
 
-Until then, depend on the checkouts by path:
+`@kama/rmlui` and `@kama/freetype` come with it. To build against a checkout instead (working on the package itself),
+override it in your gitignored `kama.local.json`, never in `kama.json`:
 
 ```json
-"dependencies": {
-  "@kama/ui":       { "path": "../kama-ui" },
-  "@kama/rmlui":    { "path": "../kama-rmlui" },
-  "@kama/freetype": { "path": "../kama-freetype" }
-}
+{ "overrides": { "@kama/ui": { "path": "../kama-ui" } } }
 ```
 
-Two notes on that:
-
-- `@kama/rmlui` and `@kama/freetype` are listed again because kama makes each consumer restate a path dependency's
-  own path dependencies.
-- `../kama-rmlui/README.md` covers the rest: build times, `"debug": { "optimize": ["rmlui", "freetype"] }` to keep
+[`@kama/rmlui`'s README](https://github.com/cosmic-canopy/kama-rmlui) covers the rest: build times, `"debug": { "optimize": ["rmlui", "freetype"] }` to keep
   the layout engine at release speed in a debug build, and Windows' static libstdc++.
 
 ```kama
@@ -154,12 +147,12 @@ every selector under `#ui-root`, mapping `body` and RmlUi's scrollbar elements. 
 - Inline properties set with `setElementProperty` may use `dp`. The web leg rewrites it to `px`.
 - Text another person typed goes through `ui::uidoc::escapeText` before `setInnerRml`. On the web an unescaped `<` is
   script injection.
-- Not drawn natively yet: `box-shadow`, `filter` and gradients (`../kama-rmlui/README.md`, "Not here yet").
+- Not drawn natively yet: `box-shadow`, `filter` and gradients ([`@kama/rmlui`'s README](https://github.com/cosmic-canopy/kama-rmlui), "Not here yet").
 
 ## Tests
 
 ```sh
-KAMA=/path/to/kama tools/test.sh       # native: debug, release, and AddressSanitizer (Linux), through ../kama-rmlui
+KAMA=/path/to/kama tools/test.sh       # native: debug, release, and AddressSanitizer (Linux), through @kama/rmlui
 KAMA=/path/to/kama tools/test-web.sh   # emcc (EMSDK, default ~/emsdk), served locally, run in headless Firefox
 ```
 
@@ -230,14 +223,12 @@ Not done; listed so it can be.
 
 **the-mallow-man**
 
-1. Replace the `ui` and `uidoc` dependencies in `game/kama.json` and `tests/kama.json` with `"@kama/ui": { "path":
-   "../../kama-ui" }` and `"@kama/rmlui": { "path": "../../kama-rmlui" }` (paths relative to each manifest). Delete
-   `ui/` and `uidoc/`.
+1. Replace the `ui` and `uidoc` dependencies in `game/kama.json` and `tests/kama.json` with `"@kama/ui": { "version":
+   "^0.1.0" }` (`@kama/rmlui` and `@kama/freetype` come with it from the registry). Delete `ui/` and `uidoc/`.
 2. Imports: `ui::…` names are unchanged (`UiContext`, `UiNav`, `UiEvent`, `UiRect`, `UI_KEY_*`). `uidoc::escapeText`
    and `uidoc::rmlToHtml` become `ui::uidoc::…`.
 3. Linking: drop `"link": ["tmm_ui", "rmlui", "freetype"]` and every `-Lnative/build/<plat>/…` flag. Nothing
    replaces them: `@kama/rmlui` and `@kama/freetype` vendor their sources, and kama compiles them into the game.
-   - Add `"@kama/freetype": { "path": "../../kama-freetype" }` beside the two dependencies in step 1.
    - Remove `native/Makefile`'s `ui`, `rmlui` and `freetype` targets, and `tools/fetch-rmlui.sh` /
      `fetch-freetype.sh`.
    - Add `"debug": { "optimize": ["rmlui", "freetype"] }` to `game/kama.json`, so a debug game keeps a release-speed
@@ -256,9 +247,10 @@ Not done; listed so it can be.
 9. Bump `.kama-version` to 0.9.577 or later (the packages declare `"kama": ">=0.9.577"`, and the game pins 0.9.542).
    Re-read `docs/KAMA_GAPS.md` at the bump.
 10. `licenses/` keeps its RmlUi and FreeType texts. They are identical to the texts the packages vendor:
-    `../kama-rmlui/licenses/manifest.tsv` and `../kama-freetype/licenses/manifest.tsv` point at them. One new row:
+    [`@kama/rmlui`](https://github.com/cosmic-canopy/kama-rmlui/blob/main/licenses/manifest.tsv) and [`@kama/freetype`](https://github.com/cosmic-canopy/kama-freetype/blob/main/licenses/manifest.tsv)'s
+    `licenses/manifest.tsv` point at them. One new row:
     FreeType's hashing code (`src/base/fthash.c`) carries an MIT notice of its own
-    (`../kama-freetype/licenses/FreeType-fthash-MIT.txt`).
+    ([`FreeType-fthash-MIT.txt`](https://github.com/cosmic-canopy/kama-freetype/blob/main/licenses/FreeType-fthash-MIT.txt)).
 
 **friendly-fire-department**: the same steps 1–3, 5 and 9, plus:
 
@@ -273,11 +265,9 @@ Not done; listed so it can be.
 ## Publishing
 
 `kama publish` ships exactly what git tracks, minus `publish.exclude` (`tools/`, `tests/`, the agent notes). The three
-packages publish in order: **@kama/freetype**, then **@kama/rmlui**, then **@kama/ui**. A published package cannot
-carry a `path` dependency. So just before this one publishes, once `@kama/rmlui` 0.1.0 is on the registry:
-
-- change `@kama/rmlui` to `{ "version": "^0.1.0" }`;
-- delete the `@kama/freetype` line, which only restates `@kama/rmlui`'s path dependency.
+packages published in order on 2026-10-13: **@kama/freetype**, then **@kama/rmlui**, then **@kama/ui**, each once the
+one before it was live, because a published package cannot carry a `path` dependency. Publish from kama-registry with
+`./ops publish ../kama-ui/kama.json`.
 
 ## License
 
@@ -294,7 +284,7 @@ what a program that ships them must carry:
 - The MIT notice of FreeType's hashing code.
 
 The web leg ships only this package's own code. A wasm build compiles FreeType (kama cannot gate a dependency by
-target, `../kama-rmlui/KAMA_GAPS.md` #4), but nothing calls it, and the link drops it.
+target, [`@kama/rmlui`'s KAMA_GAPS.md](https://github.com/cosmic-canopy/kama-rmlui/blob/main/KAMA_GAPS.md) #4), but nothing calls it, and the link drops it.
 
 ### Contribution
 

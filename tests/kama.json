@@ -5,9 +5,7 @@
   "kama": ">=0.9.577",
   "entry": "src/main.kama",
   "dependencies": {
-    "@kama/ui": { "path": ".." },
-    "@kama/rmlui": { "path": "../../kama-rmlui" },
-    "@kama/freetype": { "path": "../../kama-freetype" }
+    "@kama/ui": { "path": ".." }
   },
   "modules": { ".": { "visibility": "internal" } },
   "cincludes": ["web"],
