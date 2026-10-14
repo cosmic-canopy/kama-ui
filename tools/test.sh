@@ -1,27 +1,34 @@
 #!/bin/sh
-# test.sh — build the package's tests (tests/, one program) natively, debug and release, and run them: the RML -> HTML
-# rewriter, the pad's presses, and the seam suite against the native UiContext (RmlUi, through @kama/rmlui). `kama` is
-# taken from $KAMA or the PATH. Runs from the package root, which tests/kama.json's `-L` paths and the suite's
-# fixture and font paths are relative to.
+# test.sh — build the package's tests (tests/, one program) natively and run them: the RML -> HTML rewriter, the pad's
+# presses, and the seam suite against the native UiContext (RmlUi, through @kama/rmlui). Debug, release, and debug
+# under AddressSanitizer with leak checking (Linux; ASAN=0 skips it). `kama` is taken from $KAMA or the PATH. Runs from
+# the package root, which the suite's fixture and font paths are relative to.
 #
-# Needs @kama/rmlui beside this repository (../kama-rmlui), fetched and built:
-#   (cd ../kama-rmlui && tools/fetch-rmlui.sh && tools/fetch-freetype.sh && make -C native)
-# The browser half is tools/test-web.sh.
+# Needs @kama/rmlui and @kama/freetype beside this repository (../kama-rmlui, ../kama-freetype). Both vendor their C and
+# C++, which kama compiles, so there is nothing to fetch or build first. The browser half is tools/test-web.sh.
+#
+# AddressSanitizer is a compiler wrapper rather than a manifest entry: kama.json has no per-build-type `cflags`, and a
+# `select.TARGET` entry needs a fixed triple. So `cc`/`c++` are wrapped to add the flag to every compile and the link.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 KAMA=${KAMA:-kama}
-cd "$ROOT"
-PLAT=$(tools/platform)
-TARGET=$(tools/platform target)
-[ -f "../kama-rmlui/native/build/$PLAT/lib/librmlui.a" ] || {
-    echo "test.sh: no ../kama-rmlui/native/build/$PLAT/lib/librmlui.a — build @kama/rmlui first (see the top of this file)" >&2
-    exit 1
-}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+cd "$ROOT"
 
+"$KAMA" pkg install kama.json >/dev/null
+"$KAMA" check kama.json
 "$KAMA" pkg install tests/kama.json >/dev/null
 for mode in --debug --release; do
-    "$KAMA" build tests/kama.json --target "$TARGET" $mode -o "$tmp/tests$mode"
+    "$KAMA" build tests/kama.json $mode -o "$tmp/tests$mode"
     "$tmp/tests$mode"
 done
+
+if [ "$(uname -s)" = Linux ] && [ "${ASAN:-1}" != 0 ]; then
+    printf '#!/bin/sh\nexec cc -fsanitize=address -fno-omit-frame-pointer "$@"\n' > "$tmp/cc-asan"
+    printf '#!/bin/sh\nexec c++ -fsanitize=address -fno-omit-frame-pointer "$@"\n' > "$tmp/cxx-asan"
+    chmod +x "$tmp/cc-asan" "$tmp/cxx-asan"
+    "$KAMA" build tests/kama.json --debug --no-cache --cc "$tmp/cc-asan" --cxx "$tmp/cxx-asan" -o "$tmp/tests-asan"
+    ASAN_OPTIONS=detect_leaks=1 "$tmp/tests-asan"
+    echo "test.sh: AddressSanitizer clean"
+fi
 echo "test.sh: OK"

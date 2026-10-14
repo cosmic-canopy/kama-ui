@@ -4,10 +4,13 @@
   "license": "MIT OR Apache-2.0",
   "kind": "library",
   "kama": ">=0.9.577",
+  "description": "One set of HTML documents for kama UIs: the browser's own DOM on the web, RmlUi natively",
+  "keywords": ["ui", "html", "dom", "rmlui", "gui"],
+  "repository": "https://github.com/cosmic-canopy/kama-ui",
   "publish": {
     "exclude": [
-      ".claude/", ".github/", "docs/",
-      "AGENTS.md", "AGENTS.package.md", "AGENTS.ui.md", "CLAUDE.md"
+      "tools/", "tests/",
+      "AGENTS.md", "AGENTS.package.md", "AGENTS.ui.md", "CLAUDE.md", "KAMA_GAPS.md"
     ]
   },
   "modules": {
@@ -15,7 +18,8 @@
     "uidoc": { "visibility": "public" }
   },
   "dependencies": {
-    "@kama/rmlui": { "path": "../kama-rmlui" }
+    "@kama/rmlui": { "path": "../kama-rmlui" },
+    "@kama/freetype": { "path": "../kama-freetype" }
   },
   "cincludes": ["src"],
   "jsLibraries": ["src/kama_ui_web.js"],

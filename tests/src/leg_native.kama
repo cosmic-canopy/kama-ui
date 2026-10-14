@@ -10,9 +10,9 @@ import {
 };
 export { fontPath, injectClick, legTests, report };
 
-// RmlUi's sample face, from @kama/rmlui's fetched tree (SIL OFL 1.1); paths are relative to the package root, where
-// tools/test.sh runs.
-fn string fontPath() { return "../kama-rmlui/third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf"; }
+// RmlUi's sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence (tests/fonts/SOURCES).
+// Paths are relative to the package root, where tools/test.sh runs.
+fn string fontPath() { return "tests/fonts/LatoLatin-Regular.ttf"; }
 
 // A click as a person makes one: the pointer to the point, the left button down and up, then the update that
 // dispatches. True: there is no page to miss.

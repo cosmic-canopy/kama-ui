@@ -11,8 +11,8 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: new, not yet published.** Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug and release)
-> and in headless Firefox 157 (emcc 6.0.9).
+> **Status: new, not yet published.** Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
+> AddressSanitizer) and in headless Firefox 157 (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
 same contract. Only `native.kama` changes. The documents, the web leg and every program using `UiContext` stay as they
@@ -61,25 +61,30 @@ The rules that matter most:
 
 ### Natively
 
-Build `@kama/rmlui` once (`tools/fetch-rmlui.sh`, `tools/fetch-freetype.sh`, `make -C native` in that repo). Then in
-the program's manifest:
+`@kama/rmlui` and `@kama/freetype` vendor RmlUi and FreeType, and kama compiles them into the program. There is
+nothing to fetch or build first, and no `-L` path to set. Once the packages are on the registry, depend on this one
+alone:
+
+```json
+"dependencies": { "@kama/ui": { "version": "^0.1.0" } }
+```
+
+Until then, depend on the checkouts by path:
 
 ```json
 "dependencies": {
-  "@kama/ui":    { "path": "../kama-ui" },
-  "@kama/rmlui": { "path": "../kama-rmlui" }
-},
-"select": { "TARGET": {
-  "LINUX":   { "ldflags": ["-L../kama-rmlui/native/build/linux/lib"] },
-  "MACOS":   { "ldflags": ["-L../kama-rmlui/native/build/darwin/lib"] },
-  "WINDOWS": { "ldflags": ["-L../kama-rmlui/native/build/windows/lib", "-static-libgcc", "-Wl,-Bstatic", "-lstdc++",
-                           "-lpthread", "-Wl,-Bdynamic"] }
-} }
+  "@kama/ui":       { "path": "../kama-ui" },
+  "@kama/rmlui":    { "path": "../kama-rmlui" },
+  "@kama/freetype": { "path": "../kama-freetype" }
+}
 ```
 
-`@kama/rmlui` is listed again because kama makes each consumer restate a path dependency's path dependencies.
-The `-L` is the root's job, because a package may not name a library path. (Both are described in
-`../kama-rmlui/README.md`.)
+Two notes on that:
+
+- `@kama/rmlui` and `@kama/freetype` are listed again because kama makes each consumer restate a path dependency's
+  own path dependencies.
+- `../kama-rmlui/README.md` covers the rest: build times, `"debug": { "optimize": ["rmlui", "freetype"] }` to keep
+  the layout engine at release speed in a debug build, and Windows' static libstdc++.
 
 ```kama
 import { ui::UiContext, ui::UiEvent, ui::UiCommand, ui::UI_KEY_DOWN };
@@ -154,7 +159,7 @@ every selector under `#ui-root`, mapping `body` and RmlUi's scrollbar elements. 
 ## Tests
 
 ```sh
-KAMA=/path/to/kama tools/test.sh       # native, debug and release, through ../kama-rmlui (build it first)
+KAMA=/path/to/kama tools/test.sh       # native: debug, release, and AddressSanitizer (Linux), through ../kama-rmlui
 KAMA=/path/to/kama tools/test-web.sh   # emcc (EMSDK, default ~/emsdk), served locally, run in headless Firefox
 ```
 
@@ -183,7 +188,10 @@ own hit test (`document.elementFromPoint`) and a bubbling `MouseEvent`. Each leg
   control".
 - **On the web**: no commands and no textures, the image rewrite done before the browser fetched, and real elements.
 
-Results: **native 105 checks**, passing in debug and in release. **Web 96 checks**, passing in headless Firefox.
+Results: **native 105 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 96 checks**, passing in headless
+Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
+published.
 
 The web verdict comes back over HTTP. The page POSTs `{run, failed, output}` to `tools/web-test-server.py`, so nothing
 reads a screenshot or a DOM dump. The page then closes its own window, which ends the browser. A failing check makes
@@ -227,11 +235,13 @@ Not done; listed so it can be.
    `ui/` and `uidoc/`.
 2. Imports: `ui::…` names are unchanged (`UiContext`, `UiNav`, `UiEvent`, `UiRect`, `UI_KEY_*`). `uidoc::escapeText`
    and `uidoc::rmlToHtml` become `ui::uidoc::…`.
-3. Linking: drop `"link": ["tmm_ui", "rmlui", "freetype"]` and the three `-Lnative/build/<plat>/{ui,rmlui,freetype/lib}`
-   flags. Use one `-L../kama-rmlui/native/build/<plat>/lib` per arm instead; the package's `link` names the
-   libraries, and the shim is compiled from its `csources`.
+3. Linking: drop `"link": ["tmm_ui", "rmlui", "freetype"]` and every `-Lnative/build/<plat>/…` flag. Nothing
+   replaces them: `@kama/rmlui` and `@kama/freetype` vendor their sources, and kama compiles them into the game.
+   - Add `"@kama/freetype": { "path": "../../kama-freetype" }` beside the two dependencies in step 1.
    - Remove `native/Makefile`'s `ui`, `rmlui` and `freetype` targets, and `tools/fetch-rmlui.sh` /
-     `fetch-freetype.sh`. Point `tools/build` at `../kama-rmlui` (fetch and `make -C native`).
+     `fetch-freetype.sh`.
+   - Add `"debug": { "optimize": ["rmlui", "freetype"] }` to `game/kama.json`, so a debug game keeps a release-speed
+     layout engine, as the CMake archives gave it.
    - On Windows, build with `--cxx g++`.
 4. `game/src/menu.kama` around line 425: build the treeline in a `FixedArray<uint8>` (not `malloc`) and pass
    `rgba: buf.view()`. In `tests/src/menu_test.kama`, pass `texel.view()`.
@@ -245,7 +255,10 @@ Not done; listed so it can be.
    inline `style="tab-index: none"` to any form control that should stay out of the ring on either leg.
 9. Bump `.kama-version` to 0.9.577 or later (the packages declare `"kama": ">=0.9.577"`, and the game pins 0.9.542).
    Re-read `docs/KAMA_GAPS.md` at the bump.
-10. `licenses/` keeps its RmlUi and FreeType texts. They are identical to `../kama-rmlui/licenses/`.
+10. `licenses/` keeps its RmlUi and FreeType texts. They are identical to the texts the packages vendor:
+    `../kama-rmlui/licenses/manifest.tsv` and `../kama-freetype/licenses/manifest.tsv` point at them. One new row:
+    FreeType's hashing code (`src/base/fthash.c`) carries an MIT notice of its own
+    (`../kama-freetype/licenses/FreeType-fthash-MIT.txt`).
 
 **friendly-fire-department**: the same steps 1–3, 5 and 9, plus:
 
@@ -257,6 +270,15 @@ Not done; listed so it can be.
 - It gains the-mallow-man's E7b/E7c methods (text entry, focus, `updateAt`, `setElementProperty`) for free.
 - Its `tools/check-web` (Playwright) can keep running against the same DOM.
 
+## Publishing
+
+`kama publish` ships exactly what git tracks, minus `publish.exclude` (`tools/`, `tests/`, the agent notes). The three
+packages publish in order: **@kama/freetype**, then **@kama/rmlui**, then **@kama/ui**. A published package cannot
+carry a `path` dependency. So just before this one publishes, once `@kama/rmlui` 0.1.0 is on the registry:
+
+- change `@kama/rmlui` to `{ "version": "^0.1.0" }`;
+- delete the `@kama/freetype` line, which only restates `@kama/rmlui`'s path dependency.
+
 ## License
 
 `@kama/ui` is licensed under either of
@@ -264,9 +286,15 @@ Not done; listed so it can be.
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
-at your option. It vendors nothing. Its native leg links `@kama/rmlui`, whose README says what a program that ships
-RmlUi and FreeType must carry: two MIT notices and the FreeType FTL with its credit line. The web leg ships only this
-package's own code.
+at your option. It vendors nothing. Its native leg builds `@kama/rmlui` and `@kama/freetype`, and their READMEs say
+what a program that ships them must carry:
+
+- RmlUi's MIT notice, and the containers' (robin_hood and itlib).
+- FreeType's FTL, with its credit line.
+- The MIT notice of FreeType's hashing code.
+
+The web leg ships only this package's own code. A wasm build compiles FreeType (kama cannot gate a dependency by
+target, `../kama-rmlui/KAMA_GAPS.md` #4), but nothing calls it, and the link drops it.
 
 ### Contribution
 

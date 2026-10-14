@@ -6,19 +6,15 @@
   "entry": "src/main.kama",
   "dependencies": {
     "@kama/ui": { "path": ".." },
-    "@kama/rmlui": { "path": "../../kama-rmlui" }
+    "@kama/rmlui": { "path": "../../kama-rmlui" },
+    "@kama/freetype": { "path": "../../kama-freetype" }
   },
   "modules": { ".": { "visibility": "internal" } },
   "cincludes": ["web"],
   "jsLibraries": ["web/kama_ui_test.js"],
   "select": {
     "TARGET": {
-      "HOST":    { "ldflags": ["-L../kama-rmlui/native/build/linux/lib", "-L../kama-rmlui/native/build/darwin/lib",
-                               "-L../kama-rmlui/native/build/windows/lib"] },
-      "LINUX":   { "ldflags": ["-L../kama-rmlui/native/build/linux/lib"] },
-      "MACOS":   { "ldflags": ["-L../kama-rmlui/native/build/darwin/lib"] },
-      "WINDOWS": { "ldflags": ["-L../kama-rmlui/native/build/windows/lib", "-static-libgcc", "-Wl,-Bstatic", "-lstdc++",
-                               "-lpthread", "-Wl,-Bdynamic"] },
+      "WINDOWS": { "ldflags": ["-static-libgcc", "-Wl,-Bstatic", "-lstdc++", "-lpthread", "-Wl,-Bdynamic"] },
       "WASM":    { "ldflags": ["--embed-file", "tests/fixtures/seam.rml"] }
     }
   }
