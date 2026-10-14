@@ -29,4 +29,8 @@ extern int32_t kama_ui_test_stage_is_page(void);
 extern int32_t kama_ui_test_type(const char* id, const char* text);
 extern int32_t kama_ui_test_pick(const char* select_id, const char* option_id);
 extern int32_t kama_ui_test_drag(const char* id, int32_t steps);
+// Select the text inside the element with this id, as a person's drag would. 1 when it exists.
+extern int32_t kama_ui_test_select(const char* id);
+// 1 when the page's selection is still that text: not collapsed, its nodes still in the document and inside the element.
+extern int32_t kama_ui_test_selection_holds(const char* id);
 #endif

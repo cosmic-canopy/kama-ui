@@ -5,6 +5,41 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] — unreleased
+
+A log panel that follows its newest line only while it is read at the bottom, and grows without being rewritten.
+Still on @kama/rmlui `^0.1.1`.
+
+### Added
+
+- `isScrolledToEnd(handle)`: true within a pixel of the end, for a box that cannot scroll, and (natively) while a
+  `scrollToEnd` waits for the next update. False for an unknown handle. The pattern:
+  `bool follow = ui.isScrolledToEnd(handle: log); ui.appendInnerRml(handle: log, rml: line); if (follow) { ui.scrollToEnd(handle: log); }`.
+- `appendInnerRml(handle, rml)`: markup added after the element's children, releasing no binding.
+  - Web: `insertAdjacentHTML('beforeend', …)`. Existing nodes, their listeners, the scroll position and a person's
+    text selection are untouched, and the cost is the new markup's.
+  - Native: @kama/rmlui has no append, so it is a round trip, `setInnerRml(innerRml() + rml)`, O(the whole content)
+    per append. Attributes, inline properties, classes and the scroll position survive it (RmlUi keeps the scroll on
+    the element). Focus, hover and a caret inside do not.
+  - Native bindings inside are listed before the write and re-found right after it. A bound row is clicked before
+    its handle is used again, and it still hears. Without the re-find it was deaf until next touched.
+
+### Changed
+
+- Native `setElementClass` writes the `class` attribute, as a browser's `classList` does. RmlUi kept a toggled class
+  beside the attributes, so serializing an element (the native append) dropped it.
+
+### Tests
+
+- Native 178 checks (debug, release, AddressSanitizer), web 180 (headless Firefox). The new shared checks cover:
+  following at the end, an append while scrolled up leaving the reader in place, the line before an append keeping
+  its order, handle, class and listener, and a pending `scrollToEnd` reading as at the end. On the web, a selection
+  survives an append.
+- Mutation checks:
+  - Natively, dropping the binding re-find makes the bound line deaf (2 events, not 3).
+  - Natively, a class set with `setClass` is lost.
+  - On the web, `innerHTML +=` loses both the selection and the listener.
+
 ## [0.2.1] — 2026-10-14
 
 Built on @kama/rmlui 0.1.1 (`"@kama/rmlui": { "version": "^0.1.1" }`), which adds element scrolling, quiet attribute

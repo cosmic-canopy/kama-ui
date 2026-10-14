@@ -152,5 +152,10 @@ extern int32_t kama_ui_web_element_checked(int32_t handle);
 extern int32_t kama_ui_web_find(const char* element_id);
 // (0.2.1) `el.scrollTop = el.scrollHeight`, which the browser clamps to the end. Reading `scrollHeight` lays out first.
 extern void kama_ui_web_scroll_to_end(int32_t handle);
+// (0.2.2) 1 when `scrollHeight - scrollTop - clientHeight <= 1` (which a box that cannot scroll always is).
+extern int32_t kama_ui_web_is_scrolled_to_end(int32_t handle);
+// (0.2.2) `insertAdjacentHTML('beforeend', …)` after the image rewrite: the existing children, their listeners and a
+// text selection in them are untouched, and no binding is released.
+extern void kama_ui_web_append_inner(int32_t handle, const char* html);
 
 #endif  // KAMA_UI_WEB_H

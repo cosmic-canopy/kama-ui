@@ -55,6 +55,8 @@ extern fn void  kama_ui_web_remove_attribute(int32 handle, UnsafeConstPtr<cchar>
 extern fn int32 kama_ui_web_element_checked(int32 handle);
 extern fn int32 kama_ui_web_find(UnsafeConstPtr<cchar> element_id);
 extern fn void  kama_ui_web_scroll_to_end(int32 handle);
+extern fn int32 kama_ui_web_is_scrolled_to_end(int32 handle);
+extern fn void  kama_ui_web_append_inner(int32 handle, UnsafeConstPtr<cchar> html);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -358,6 +360,19 @@ type value UiContext implements UiHost {
     {
         if (this.ready == 0) { return; }
         kama_ui_web_scroll_to_end(handle: handle);
+    }
+
+    public unsafe fn bool isScrolledToEnd(int32 handle)
+    {
+        if (this.ready == 0) { return false; }
+        return kama_ui_web_is_scrolled_to_end(handle: handle) != 0;
+    }
+
+    // `insertAdjacentHTML`: the existing nodes are not touched, so nothing is released (host.kama).
+    public unsafe fn void appendInnerRml(int32 handle, const ref string rml)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_append_inner(handle: handle, html: rml.cstr());
     }
 
     // Read as `elementText` is: measured, then read in full.

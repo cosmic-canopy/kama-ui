@@ -27,7 +27,7 @@ import {
     rmlui::Focus, rmlui::LISTEN_BUBBLE,
     rmlui::KEY_RETURN, rmlui::KEY_TAB, rmlui::KEY_BACKSPACE, rmlui::KEY_DELETE, rmlui::KEY_RIGHT, rmlui::KEY_LEFT,
     rmlui::KEY_DOWN, rmlui::KEY_UP, rmlui::KEY_HOME, rmlui::KEY_END, rmlui::MOD_NONE, rmlui::MOD_SHIFT,
-    std::collections::ConstView,
+    std::collections::ConstView, std::collections::DynamicArray,
     std::fmt::parse, std::fmt::ParseError,
 };
 export { UiContext };
@@ -49,6 +49,21 @@ fn int32 rmlKey(int32 code)
     if (code == UI_KEY_HOME) { return KEY_HOME; }
     if (code == UI_KEY_END) { return KEY_END; }
     return 0;
+}
+
+// A `class` attribute with `name` switched: every occurrence dropped, then added once at the end when `on`.
+fn string toggled(const ref string list, const ref string name, bool on)
+{
+    string result = "";
+    foreach (string piece in list.split(separator: " ")) {
+        if (!piece.isEmpty() && piece != name) {
+            if (result.isEmpty()) { result = copy piece; } else { result = "${result} ${piece}"; }
+        }
+    }
+    if (on) {
+        if (result.isEmpty()) { result = copy name; } else { result = "${result} ${name}"; }
+    }
+    return result;
 }
 
 fn bool navKey(int32 code)
@@ -242,6 +257,72 @@ type value UiContext implements UiHost {
         }
     }
 
+    // ⚠️ A ROUND TRIP NATIVELY, O(the whole content) per append where the web's is O(the new markup): @kama/rmlui has no
+    // append, so the element's markup is read back (`innerRml`), the new markup added and the whole written again. It
+    // keeps what the markup carries — every attribute, the inline properties RmlUi serializes, a class (an attribute
+    // here, see `setElementClass`) — and the scroll position, which RmlUi keeps on the element itself through a rewrite
+    // (measured: restoring it by hand changed nothing). ⚠️ AND THE BINDINGS INSIDE, AT ONCE: a binding re-finds
+    // its element only when it is next used, and its listeners go back on only then, so a bound row clicked before
+    // anything touched its handle would be deaf — where the web's untouched node never stopped hearing. So the bindings
+    // naming elements inside are listed first (`boundInside`) and re-found right after the write. It cannot keep focus,
+    // hover or a text field's caret inside the element, and a target queued from inside it reads as 0 at the poll.
+    public unsafe fn void appendInnerRml(int32 handle, const ref string rml)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) {
+            case None: { }
+            case Some(value: el): {
+                DynamicArray<int32> inside = DynamicArray.empty();
+                this.boundInside(el: el, into: inside);
+                string before = el.innerRml();
+                string both = "${before}${rml}";
+                el.setInnerRml(rml: both);
+                isize i = 0;
+                while (i < inside.length()) {
+                    Binding b = Binding.fromHandle(handle: inside[i]);
+                    Optional<Element> again = b.element();
+                    i = i + 1;
+                }
+            }
+        };
+    }
+
+    // The bindings naming an element under `el`, by walking it: only an element with an id can have one, and
+    // `bindingOf` says whether it does.
+    unsafe fn void boundInside(Element el, ref DynamicArray<int32> into)
+    {
+        int32 n = el.childCount();
+        int32 i = 0;
+        while (i < n) {
+            Optional<Element> c = el.child(index: i);
+            match (c) {
+                case None: { }
+                case Some(value: child): {
+                    string id = child.id();
+                    if (!id.isEmpty()) {
+                        Optional<Binding> b = this.doc.bindingOf(element: child);
+                        match (b) { case None: { } case Some(value: x): { into.add(item: x.handle()); } };
+                    }
+                    this.boundInside(el: child, into: into);
+                }
+            };
+            i = i + 1;
+        }
+    }
+
+    // From the last layout, as every size natively is — or true while a `scrollToEnd` waits for the next update, so a
+    // program that appended and asked in one frame still reads "at the end" before that update.
+    public unsafe fn bool isScrolledToEnd(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        Element el = Element.fromHandle(handle: 0);
+        match (e) { case None: { return false; } case Some(value: x): { el = x; } };
+        Optional<string> pending = el.attribute(name: "data-kama-ui-end");
+        bool waiting = match (pending) { case None: false; case Some(value: s): true; };
+        if (waiting) { return true; }
+        return el.scrollHeight() - el.scrollTop() - el.clientHeight() <= 1.0;
+    }
+
     public unsafe fn void scrollToEnd(int32 handle)
     {
         Optional<Element> e = this.bound(handle: handle);
@@ -428,10 +509,22 @@ type value UiContext implements UiHost {
         match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
     }
 
+    // ⚠️ THROUGH THE `class` ATTRIBUTE (CHANGED in 0.2.2), as a browser's `classList` writes it. RmlUi keeps a class
+    // `setClass` toggled BESIDE the attributes, so serializing the element — which `appendInnerRml` does here — wrote
+    // the markup's classes back and dropped the toggled one. RmlUi turns the attribute into the class list itself.
     public unsafe fn void setElementClass(int32 handle, const ref string name, bool on)
     {
         Optional<Element> e = this.bound(handle: handle);
-        match (e) { case Some(value: el): { el.setClass(name: name, on: on); } case None: { } };
+        match (e) {
+            case None: { }
+            case Some(value: el): {
+                string attr = "class";
+                Optional<string> current = el.attribute(name: attr);
+                string list = match (current) { case None: ""; case Some(value: s): copy s; };
+                string next = toggled(list: list, name: name, on: on);
+                if (next != list) { el.setAttributeQuietly(name: attr, value: next); }
+            }
+        };
     }
 
     public unsafe fn bool setElementProperty(int32 handle, const ref string name, const ref string value)

@@ -23,6 +23,8 @@ extern fn int32 kama_ui_test_stage_is_page();
 extern fn int32 kama_ui_test_type(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> text);
 extern fn int32 kama_ui_test_pick(UnsafeConstPtr<cchar> select_id, UnsafeConstPtr<cchar> option_id);
 extern fn int32 kama_ui_test_drag(UnsafeConstPtr<cchar> id, int32 steps);
+extern fn int32 kama_ui_test_select(UnsafeConstPtr<cchar> id);
+extern fn int32 kama_ui_test_selection_holds(UnsafeConstPtr<cchar> id);
 
 // Ignored on this leg: the browser takes its faces from the page's @font-face.
 fn string fontPath() { return ""; }
@@ -109,8 +111,17 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     ui.loadDocument(path: "tests/fixtures/seam.rml");
 }
 
+unsafe fn bool selectText(const ref string id) { return kama_ui_test_select(id: id.cstr()) != 0; }
+unsafe fn bool selectionHolds(const ref string id) { return kama_ui_test_selection_holds(id: id.cstr()) != 0; }
+
 fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
 {
+    section(what: "web: an append leaves a person's selection alone");
+    int32 log = ui.findElement(elementId: "log");
+    check(t: t, ok: selectText(id: "newest"), what: "a line's text is selected");
+    ui.appendInnerRml(handle: log, rml: "<p>appended under a selection</p>");
+    check(t: t, ok: selectionHolds(id: "newest"), what: "...and after an append it still is: the same nodes, still in the page");
+
     section(what: "web: a page's stage is the window");
     check(t: t, ok: stageIsPage(), what: "#ui-stage is pinned to the window's edges, unscaled and shown, so CSS follows a resize");
     UiRect win = window();

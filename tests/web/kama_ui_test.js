@@ -89,6 +89,25 @@ mergeInto(LibraryManager.library, {
         return 1;
     },
 
+    kama_ui_test_select: function (idPtr) {
+        var el = document.getElementById(UTF8ToString(idPtr));
+        if (!el) return 0;
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return sel.toString() === el.textContent ? 1 : 0;
+    },
+
+    kama_ui_test_selection_holds: function (idPtr) {
+        var el = document.getElementById(UTF8ToString(idPtr));
+        var sel = window.getSelection();
+        if (!el || !sel || sel.rangeCount === 0 || sel.isCollapsed) return 0;
+        var r = sel.getRangeAt(0);
+        return (r.startContainer.isConnected && el.contains(r.startContainer) && sel.toString() === el.textContent) ? 1 : 0;
+    },
+
     kama_ui_test_click_at: function (x, y) {
         // The same ratio kama_ui_web.js reads: framebuffer pixels -> CSS pixels.
         var c = document.getElementById('canvas');

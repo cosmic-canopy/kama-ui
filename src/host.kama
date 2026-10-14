@@ -3,7 +3,8 @@
 // Three additions are marked below (`loadDocumentText`, `setImageRewrite`, and `provideImage` taking a view rather than
 // a raw pointer). 0.2.0's are marked with their version: `elementId`, `setElementAttribute`, `removeElementAttribute`,
 // `elementChecked`, `findElement`, an event's `target`, one change per edit, `setInnerRml` releasing what it replaces,
-// and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively.
+// and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively; 0.2.2
+// `isScrolledToEnd` and `appendInnerRml`.
 //
 // TWO WAYS TO OPEN, ONE CONTRACT. `UiContext.open(width, height, fontPath)` is a STAGE: a fixed virtual resolution the
 // program letterboxes and scales (a game's menus). `UiContext.openPage(width, height, fontPath)` (0.2.0) is a PAGE: the
@@ -190,6 +191,23 @@ type contract UiHost for value {
     // what was written. Write nothing after it in that frame. No event reaches `pollEvent`. A no-op for an element
     // that does not scroll, and for an unknown handle.
     fn void scrollToEnd(int32 handle);
+
+    // ADDED (0.2.2): is the element scrolled to its end (within a pixel)? True too when it cannot scroll at all, and while
+    // a `scrollToEnd` for it is still waiting for the next update (natively). False for an unknown handle. What lets a
+    // log follow its newest line ONLY while it is read at the bottom — scrolling up to read is not yanked back down:
+    //     bool follow = ui.isScrolledToEnd(handle: log);
+    //     ui.appendInnerRml(handle: log, rml: line);
+    //     if (follow) { ui.scrollToEnd(handle: log); }
+    fn bool isScrolledToEnd(int32 handle);
+
+    // ADDED (0.2.2): add markup after the element's children without rewriting them — a log's new line. Unlike
+    // `setInnerRml` it releases no binding: handles inside stay valid, listeners and all, and the scroll position is
+    // kept. On the web the existing nodes are untouched (a person's text selection in them survives) and the cost is
+    // the new markup's. ⚠️ NATIVELY IT IS A ROUND TRIP, O(the whole content) per append: @kama/rmlui has no append, so
+    // the element's markup is read back and written again with the new markup. Attributes, inline properties and
+    // classes survive it; focus, hover and a caret inside the element do not. Text a person typed still goes through
+    // `ui::uidoc::escapeText` first, as for `setInnerRml`.
+    fn void appendInnerRml(int32 handle, const ref string rml);
 
     // A bound text control's value, and setting it. ⚠️ NO CHANGE EVENT EITHER WAY, ON BOTH LEGS (nor for
     // `setElementValue`): a program writing state into a control is not a person editing it, and only a person's edit

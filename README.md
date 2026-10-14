@@ -31,13 +31,13 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 
 | group | methods |
 |---|---|
-| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` (releases what it replaces) |
+| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` (releases what it replaces), `appendInnerRml(handle, rml)` (keeps it) |
 | assets | `loadFont(path, fallback)`, `provideImage(name, rgba: ConstView<uint8>, w, h)`, `setImageRewrite(nativeExt, webExt)` |
 | frame | `setSize`, `setViewport(offsetX, offsetY, scale, visible)`, `setDpRatio`, `update()`, `updateAt(seconds)`, `render()` |
 | drawing (native) | `commandCount`, `command(i)` → `UiCommand` (`kind`, vertices, indices, texture, translation, scissor, transform), `textureCount`, `texture(h)`, `textureGeneration(h)` |
 | pointer (native) | `mouseMove`, `mouseButton`, `mouseWheel` |
 | keyboard | `key(code, down, shift)` with `UI_KEY_*` (GLFW's numbers), `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
-| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `scrollToEnd(h)` |
+| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `scrollToEnd(h)`, `isScrolledToEnd(h)` |
 | events | `pollEvent()` → `UiEvent { kind: Click \| Change, element: handle, target: handle }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
@@ -72,7 +72,20 @@ The rules that matter most:
   edit is queued.
 - **`scrollToEnd` follows a log**: write the new line, ask in the same frame, and the next frame drawn shows the end
   on both legs. The web scrolls at once; natively the request waits for the next `update`, whose layout pass measures
-  what was written.
+  what was written. To follow only while the reader is at the bottom (scrolling up to read is not yanked back), ask
+  first and append with `appendInnerRml`, which rewrites nothing:
+
+  ```kama
+  bool follow = ui.isScrolledToEnd(handle: log);
+  ui.appendInnerRml(handle: log, rml: line);
+  if (follow) { ui.scrollToEnd(handle: log); }
+  ```
+
+  `isScrolledToEnd` is true within a pixel of the end, for a box that cannot scroll, and while a `scrollToEnd` waits
+  for the next update. On the web an append touches no existing node, so a person's text selection survives it.
+  ⚠️ Natively it is a round trip, O(the whole content) per append, because @kama/rmlui has no append. The markup is
+  read back and written whole. Attributes, inline properties, classes, the scroll position and the bindings inside
+  (re-found at once, listeners included) survive. Focus, hover and a caret inside do not.
 - **The program gets every key first** and forwards the subset: TAB, the arrows, ENTER, and the four editing keys.
   ENTER clicks the focused element, so it arrives as an ordinary click.
 - **The native renderer must apply `UiCommand`s in order and skip** (or implement) **every one whose `kind` is not
@@ -230,6 +243,10 @@ The two scripts build one program, `tests/`. Shared on both legs:
     the wheel while the page stays put;
   - `scrollToEnd` asked right after a rewrite, before any update, showing the newest line at the log's bottom with no
     event, and doing nothing for an unknown handle or a box that does not scroll;
+  - a log appended to with `appendInnerRml`: followed while at its end (`isScrolledToEnd` true even before the update),
+    the line before the new one kept in order with its handle, its class and its listener (clicked before its handle
+    is used again); scrolled up, an append leaving the reader where they were, unfollowed; a pending `scrollToEnd`
+    reading as at the end;
   - a stage opened after the page, shown by `setViewport` at its own virtual width.
 
 On the native leg the click is RmlUi's own input: pointer, button down and up, update. On the web it is the browser's
@@ -242,14 +259,14 @@ selected, then `input` and `change`). Each leg adds its own checks:
   Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
   control", and a page reflowing to `setSize`.
   The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
-- **On the web**: a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
+- **On the web**: a text selection surviving an append, a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
   attribute), real elements, a row a rewrite released and a field from a closed
   document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
   window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,
   applied to the box under the point (a synthetic `WheelEvent` scrolls nothing).
 
-Results: **native 165 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 165 checks**, passing in headless
+Results: **native 178 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 180 checks**, passing in headless
 Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
 published.
 

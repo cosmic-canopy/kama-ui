@@ -686,6 +686,23 @@ mergeInto(LibraryManager.library, {
         if (el) el.scrollTop = el.scrollHeight;
     },
 
+    kama_ui_web_is_scrolled_to_end__deps: ['$KamaUi'],
+    kama_ui_web_is_scrolled_to_end: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!el) return 0;
+        return (el.scrollHeight - el.scrollTop - el.clientHeight <= 1) ? 1 : 0;
+    },
+
+    // `appendInnerRml` (0.2.2). ⚠️ `insertAdjacentHTML`, NEVER `innerHTML +=`: the second re-parses the whole content,
+    // which replaces every node — the reader's selection collapses, the bindings inside point at detached nodes, and a
+    // log costs O(its length) per line. This parses only the new markup.
+    kama_ui_web_append_inner__deps: ['$KamaUi'],
+    kama_ui_web_append_inner: function (handle, htmlPtr) {
+        var el = KamaUi.el(handle);
+        if (!el) return;
+        el.insertAdjacentHTML('beforeend', KamaUi.rewrite(UTF8ToString(htmlPtr)));
+    },
+
     // ⚠️ TWO ATTRIBUTES ARE STATE NATIVELY AND ONLY A DEFAULT HERE. RmlUi keeps a checkbox's state in `checked` and a
     // control's in `value`; a browser reads either attribute only until a person touches the control (its "dirty"
     // flag), after which writing the attribute changes nothing on screen. So both also write the property — quietly,

@@ -105,6 +105,7 @@ fn string pageText()
         #bar { height: 40dp; }
         #log { height: 120dp; overflow: auto; }
         #log p { height: 30dp; }
+        #log p.marked { margin-left: 10dp; }
         scrollbarvertical { width: 8dp; }
         scrollbarvertical sliderbar { min-height: 10dp; background-color: #808080ff; }
     </style></head><body>
@@ -491,6 +492,56 @@ fn void pageTests(ref Tally t)
     ui.update();
     UiRect pageAfter = ui.elementRect(handle: page);
     check(t: t, ok: pageAfter.y == 0.0, what: "...a no-op for an unknown handle and for a box that does not scroll");
+
+    section(what: "a page: a log appended to, followed only while it is read at its end");
+    check(t: t, ok: ui.isScrolledToEnd(handle: log), what: "after scrollToEnd the log is at its end");
+    check(t: t, ok: ui.isScrolledToEnd(handle: page) && !ui.isScrolledToEnd(handle: 0),
+          what: "a box that cannot scroll is at its end; an unknown handle is not");
+    int32 newestBound = ui.bindElement(elementId: "newest");
+    ui.setElementClass(handle: newestBound, name: "marked", on: true);
+    ui.update();
+    collect(ui: ui);
+    bool follow = ui.isScrolledToEnd(handle: log);
+    ui.appendInnerRml(handle: log, rml: "<p id='a1'>a1</p>");
+    if (follow) { ui.scrollToEnd(handle: log); }
+    check(t: t, ok: ui.isScrolledToEnd(handle: log), what: "...and still reads so between the append and the update");
+    ui.update();
+    int32 a1 = ui.findElement(elementId: "a1");
+    UiRect a1r = ui.elementRect(handle: a1);
+    UiRect lr2 = ui.elementRect(handle: log);
+    float32 a1Bottom = a1r.y + a1r.height;
+    float32 logBottom2 = lr2.y + lr2.height;
+    check(t: t, ok: a1Bottom > logBottom2 - 1.0 && a1Bottom < logBottom2 + 1.0,
+          what: "at its end, an append and scrollToEnd show the appended line at the bottom (${a1Bottom} of ${logBottom2})");
+    // Clicked BEFORE its handle is used again: the append itself must have put its listener back.
+    injectClick(ui: ui, x: centerX(r: a1r), y: a1r.y - 15.0);
+    Seen onKept = collect(ui: ui);
+    check(t: t, ok: onKept.count == 3 && onKept.first == newestBound,
+          what: "the line before it still hears its clicks: its own, then the log's and the page's (${onKept.count})");
+    UiRect kept = ui.elementRect(handle: newestBound);
+    check(t: t, ok: newestBound == newest && kept.height == 30.0 && kept.y + kept.height == a1r.y,
+          what: "...kept, in order, its handle still naming it (${kept.y} + ${kept.height} = ${a1r.y})");
+    check(t: t, ok: kept.x == lr2.x + 10.0, what: "...with the class it was given (x ${kept.x}, the log's ${lr2.x})");
+    check(t: t, ok: injectScroll(ui: ui, x: centerX(r: lr2), y: centerY(r: lr2), notches: -2.0), what: "the reader scrolls up");
+    check(t: t, ok: !ui.isScrolledToEnd(handle: log), what: "...and the log is no longer at its end");
+    UiRect reading = ui.elementRect(handle: newestBound);
+    bool followUp = ui.isScrolledToEnd(handle: log);
+    ui.appendInnerRml(handle: log, rml: "<p id='a2'>a2</p>");
+    if (followUp) { ui.scrollToEnd(handle: log); }
+    ui.update();
+    UiRect stillReading = ui.elementRect(handle: newestBound);
+    check(t: t, ok: stillReading.y == reading.y, what: "an append while reading above leaves the reader where they were (${reading.y} -> ${stillReading.y})");
+    int32 a2 = ui.findElement(elementId: "a2");
+    UiRect a2r = ui.elementRect(handle: a2);
+    check(t: t, ok: a2 > 0 && a2r.y >= logBottom2 && !ui.isScrolledToEnd(handle: log),
+          what: "...the new line below the fold, not followed (${a2r.y})");
+    ui.scrollToEnd(handle: log);
+    check(t: t, ok: ui.isScrolledToEnd(handle: log), what: "a pending scrollToEnd reads as at the end");
+    ui.update();
+    UiRect a2end = ui.elementRect(handle: a2);
+    check(t: t, ok: ui.isScrolledToEnd(handle: log) && a2end.y + a2end.height > logBottom2 - 1.0,
+          what: "...and the next update puts the newest line at the bottom");
+    ui.appendInnerRml(handle: 0, rml: "<p>x</p>");
 
     pageLegTests(t: t, ui: ui, page: page);
     ui.close();
