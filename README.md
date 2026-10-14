@@ -11,7 +11,7 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: new, not yet published.** Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
+> **Status: published** (registry.kama-lang.org, 0.2.0 on 2026-10-14). Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
 > AddressSanitizer) and in headless Firefox 157 (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
@@ -37,7 +37,7 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 | drawing (native) | `commandCount`, `command(i)` → `UiCommand` (`kind`, vertices, indices, texture, translation, scissor, transform), `textureCount`, `texture(h)`, `textureGeneration(h)` |
 | pointer (native) | `mouseMove`, `mouseButton`, `mouseWheel` |
 | keyboard | `key(code, down, shift)` with `UI_KEY_*` (GLFW's numbers), `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
-| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)` |
+| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `scrollToEnd(h)` |
 | events | `pollEvent()` → `UiEvent { kind: Click \| Change, element: handle, target: handle }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
@@ -67,11 +67,12 @@ The rules that matter most:
 - **One change per edit, the same count on both legs**: each character typed into a text field or a textarea, each
   step of a range (live, as a slider previews), each toggle of a checkbox, each choice of a radio or an option. A
   commit is no edit: ENTER in a text field, a field losing focus, a slider let go, and the radio a choice unchecks.
-  ⚠️ Natively RmlUi also forces a change for a range step past either end, or a drag within one step, that changes
-  nothing. A browser raises none.
-- **Writes into controls raise no event on either leg.** Only a person's edit is queued. ⚠️ One exception, natively:
-  writing `checked` on a checkbox or radio raises RmlUi's change, because `@kama/rmlui` 0.1.0 has no quiet attribute
-  write. A browser raises none.
+  Neither is a movement that changes nothing: a range stepped past its end, or dragged within one step.
+- **Writes into controls raise no event on either leg**, attributes included (`checked`, `value`). Only a person's
+  edit is queued.
+- **`scrollToEnd` follows a log**: write the new line, ask in the same frame, and the next frame drawn shows the end
+  on both legs. The web scrolls at once; natively the request waits for the next `update`, whose layout pass measures
+  what was written.
 - **The program gets every key first** and forwards the subset: TAB, the arrows, ENTER, and the four editing keys.
   ENTER clicks the focused element, so it arrives as an ordinary click.
 - **The native renderer must apply `UiCommand`s in order and skip** (or implement) **every one whose `kind` is not
@@ -218,15 +219,17 @@ The two scripts build one program, `tests/`. Shared on both legs:
   - `findElement`: a found element's click raising nothing, a found container not hearing its children, a found handle
     taking a write and a rewrite, and binding it later giving the same handle, which then hears;
   - **one change per edit, counted per control**: three characters typed into a text field, two into a textarea, a
-    range step, a checkbox toggle, a radio choice (one, though RmlUi also unchecks the neighbour), an option picked,
-    and ENTER in a text field (none);
-  - attributes: `hidden` against the document's `[hidden]` rule, `checked` set and removed, a person's click toggling
+    range step, a range step past its end (none), a checkbox toggle, a radio choice (one, though RmlUi also unchecks
+    the neighbour), an option picked, and ENTER in a text field (none);
+  - attributes: `hidden` against the document's `[hidden]` rule, `checked` set and removed quietly, a person's click toggling
     it, a write after that still taking, and a `value` attribute written quietly;
   - a 3,400-byte value with three-byte characters read back whole;
   - closing the document;
   - `close()`;
   - **a page** (`openPage`): shown without `setViewport` at the window's corner, and an `overflow: auto` box scrolled by
     the wheel while the page stays put;
+  - `scrollToEnd` asked right after a rewrite, before any update, showing the newest line at the log's bottom with no
+    event, and doing nothing for an unknown handle or a box that does not scroll;
   - a stage opened after the page, shown by `setViewport` at its own virtual width.
 
 On the native leg the click is RmlUi's own input: pointer, button down and up, update. On the web it is the browser's
@@ -237,16 +240,16 @@ selected, then `input` and `change`). Each leg adds its own checks:
 
 - **Natively**: draws with vertices and a glyph-atlas texture, the provided picture at its own size, typing with
   Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
-  control", a `checked` write's change event (pinned: the one known difference), and a page reflowing to `setSize`.
+  control", and a page reflowing to `setSize`.
   The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
 - **On the web**: a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
-  attribute), real elements, a `checked` write raising nothing, a row a rewrite released and a field from a closed
+  attribute), real elements, a row a rewrite released and a field from a closed
   document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
   window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,
   applied to the box under the point (a synthetic `WheelEvent` scrolls nothing).
 
-Results: **native 161 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 161 checks**, passing in headless
+Results: **native 165 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 165 checks**, passing in headless
 Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
 published.
 

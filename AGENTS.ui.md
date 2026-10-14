@@ -26,6 +26,10 @@ the contract. These are the working rules.
   A binding's listeners go on and come off through `KamaUi.heard`, one list, so a detach can never miss an event.
 - **`ui::uidoc` is pure** (string in, string out). Its suite runs on both legs. A new RCSS/CSS disagreement goes there,
   with a check, never into a per-screen special case.
-- **This package depends on `@kama/rmlui` `^0.1.0` from the registry** (FreeType comes with it). To work against
+- **This package depends on `@kama/rmlui` `^0.1.1` from the registry** (FreeType comes with it). To work against
   checkouts, override them in a gitignored `kama.local.json` (`"overrides": {"@kama/rmlui": {"path":
-  "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one.
+  "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one. An override
+  applies only once the version resolves, so an UNPUBLISHED version also needs a local file registry holding a tarball
+  of the checkout, layered before the official one in `kama.local.json`'s `registries` (`tests/kama.local.json` too;
+  it cannot override a transitive dependency, so it takes the tarball). `kama.lock` then pins that tarball: restore it
+  (`git checkout kama.lock tests/kama.lock`) and never commit it until the version is published.

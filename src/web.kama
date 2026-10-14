@@ -54,6 +54,7 @@ extern fn void  kama_ui_web_set_attribute(int32 handle, UnsafeConstPtr<cchar> na
 extern fn void  kama_ui_web_remove_attribute(int32 handle, UnsafeConstPtr<cchar> name);
 extern fn int32 kama_ui_web_element_checked(int32 handle);
 extern fn int32 kama_ui_web_find(UnsafeConstPtr<cchar> element_id);
+extern fn void  kama_ui_web_scroll_to_end(int32 handle);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -350,6 +351,13 @@ type value UiContext implements UiHost {
     {
         if (this.ready == 0) { return 0; }
         return kama_ui_web_find(element_id: elementId.cstr());
+    }
+
+    // At once: the JS reads `scrollHeight`, which makes the browser lay out what was just written (host.kama).
+    public unsafe fn void scrollToEnd(int32 handle)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_scroll_to_end(handle: handle);
     }
 
     // Read as `elementText` is: measured, then read in full.

@@ -150,5 +150,7 @@ extern void kama_ui_web_remove_attribute(int32_t handle, const char* name);
 extern int32_t kama_ui_web_element_checked(int32_t handle);
 // `kama_ui_web_bind` without the listener: the same handle for the id, 0 when no element has it.
 extern int32_t kama_ui_web_find(const char* element_id);
+// (0.2.1) `el.scrollTop = el.scrollHeight`, which the browser clamps to the end. Reading `scrollHeight` lays out first.
+extern void kama_ui_web_scroll_to_end(int32_t handle);
 
 #endif  // KAMA_UI_WEB_H

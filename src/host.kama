@@ -3,7 +3,7 @@
 // Three additions are marked below (`loadDocumentText`, `setImageRewrite`, and `provideImage` taking a view rather than
 // a raw pointer). 0.2.0's are marked with their version: `elementId`, `setElementAttribute`, `removeElementAttribute`,
 // `elementChecked`, `findElement`, an event's `target`, one change per edit, `setInnerRml` releasing what it replaces,
-// and `elementText` with no cap.
+// and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively.
 //
 // TWO WAYS TO OPEN, ONE CONTRACT. `UiContext.open(width, height, fontPath)` is a STAGE: a fixed virtual resolution the
 // program letterboxes and scales (a game's menus). `UiContext.openPage(width, height, fontPath)` (0.2.0) is a PAGE: the
@@ -174,16 +174,22 @@ type contract UiHost for value {
     // ADDED (0.2.0): set or remove one attribute — `src`, `disabled`, `hidden`, `checked`, a `data-*` a rule selects
     // on. In place, like a class. Two attributes are a control's STATE, and they write it on both legs: `checked` (a
     // browser's attribute is only the default once a person has toggled the box, so the web leg sets `.checked` too)
-    // and `value` (written as `setElementText` writes it, quietly). On the web an `<img src>` gets `setImageRewrite`'s
-    // extension, as markup does. ⚠️ NATIVELY, WRITING `checked` ON A CHECKBOX OR RADIO RAISES A CHANGE EVENT: RmlUi
-    // dispatches one from the attribute itself and @kama/rmlui 0.1.0 has no quiet attribute write. A browser raises
-    // none. ⚠️ `hidden` hides nothing by itself natively (RmlUi has no default stylesheet): the document says
+    // and `value` (written as `setElementText` writes it). Every write is QUIET on both legs (CHANGED in 0.2.1: natively
+    // a `checked` write raised RmlUi's change). On the web an `<img src>` gets `setImageRewrite`'s extension, as markup
+    // does. ⚠️ `hidden` hides nothing by itself natively (RmlUi has no default stylesheet): the document says
     // `[hidden] { display: none; }`, which both legs then honour.
     fn void setElementAttribute(int32 handle, const ref string name, const ref string value);
     fn void removeElementAttribute(int32 handle, const ref string name);
 
     // ADDED (0.2.0): is a bound checkbox or radio checked? False for anything else, and for an unknown handle.
     fn bool elementChecked(int32 handle);
+
+    // ADDED (0.2.1): scroll an element to the end of its content — a log following its newest line. Write, then ask, in
+    // the same frame: the frame drawn next shows the end on both legs. The web scrolls at once (a browser lays out on
+    // demand); natively the request is remembered and honoured in the next `update`, after the layout pass has measured
+    // what was written. Write nothing after it in that frame. No event reaches `pollEvent`. A no-op for an element
+    // that does not scroll, and for an unknown handle.
+    fn void scrollToEnd(int32 handle);
 
     // A bound text control's value, and setting it. ⚠️ NO CHANGE EVENT EITHER WAY, ON BOTH LEGS (nor for
     // `setElementValue`): a program writing state into a control is not a person editing it, and only a person's edit
@@ -197,10 +203,9 @@ type contract UiHost for value {
     // Clicks and changes on bound elements. CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
     // every kind of control — each character typed into a text field or a textarea, each step of a range (live, as a
     // slider previews), each toggle of a checkbox, each choice of a radio or an option. A commit is no edit: ENTER in a
-    // text field, a field losing focus, a slider let go, and the radio a choice unchecks raise none. ⚠️ ONE RESIDUE,
-    // NATIVELY: RmlUi forces a change for every movement of a range's bar, so a step past either end, or a drag that
-    // stays within one step, raises a change that changes nothing (@kama/rmlui 0.1.0 cannot tell it apart). A browser
-    // raises none. ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
+    // text field, a field losing focus, a slider let go, and the radio a choice unchecks raise none. Neither does a
+    // movement that changes nothing: a range stepped past either end, or dragged within one step (CHANGED in 0.2.1:
+    // natively RmlUi raised one for each; @kama/rmlui 0.1.1 drops them). ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
     // press can be two events (the button's, then the container's) — on both legs. Each names its `target` (0.2.0):
     // the nearest element with an id where it happened, so one binding on a container is enough to tell its rows
     // apart. ⚠️ POLL BEFORE YOU REWRITE: a target a `setInnerRml` destroyed in between reads as 0.

@@ -82,12 +82,6 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     int32 pic = ui.bindElement(elementId: "pic");
     ui.setElementAttribute(handle: pic, name: "src", value: "/img/dot2.pam");
     check(t: t, ok: attrEnds(id: "pic", attr: "src", suffix: "/img/dot2.webp"), what: "an `src` written as an attribute is rewritten too");
-    int32 agree = ui.bindElement(elementId: "agree");
-    collect(ui: ui);
-    ui.setElementAttribute(handle: agree, name: "checked", value: "");
-    Seen wrote = collect(ui: ui);
-    check(t: t, ok: wrote.count == 0, what: "writing `checked` raises nothing here (natively it does: host.kama) (${wrote.count})");
-    ui.removeElementAttribute(handle: agree, name: "checked");
 
     section(what: "web: a slider's release is no edit");
     int32 level = ui.bindElement(elementId: "level");

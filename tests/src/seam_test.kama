@@ -344,7 +344,8 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: ui.elementChecked(handle: agree), what: "writing `checked` checks it");
     ui.removeElementAttribute(handle: agree, name: "checked");
     check(t: t, ok: !ui.elementChecked(handle: agree), what: "...and removing it unchecks it");
-    collect(ui: ui);   // natively those writes raised changes; leg_native.kama says so
+    Seen quietChecks = collect(ui: ui);
+    check(t: t, ok: quietChecks.count == 0, what: "...and neither write raised an event (${quietChecks.count})");
     UiRect ar = ui.elementRect(handle: agree);
     injectClick(ui: ui, x: centerX(r: ar), y: centerY(r: ar));
     Seen toggled = collect(ui: ui);
@@ -393,6 +394,12 @@ fn void seamTests(ref Tally t)
     press(ui: ui, key: UI_KEY_RIGHT);
     int32 stepped = changesOn(ui: ui, handle: level);
     check(t: t, ok: stepped == 1, what: "a range stepped once: one (${stepped})");
+    ui.setElementValue(handle: level, value: 1.0);
+    ui.update();
+    press(ui: ui, key: UI_KEY_RIGHT);
+    int32 pastEnd = changesOn(ui: ui, handle: level);
+    float32 stillMax = ui.elementValue(handle: level);
+    check(t: t, ok: pastEnd == 0 && stillMax == 1.0, what: "a range stepped past its end changes nothing: none (${pastEnd})");
     UiRect agreeBox = ui.elementRect(handle: agree);
     injectClick(ui: ui, x: centerX(r: agreeBox), y: centerY(r: agreeBox));
     int32 toggledOnce = changesOn(ui: ui, handle: agree);
@@ -458,6 +465,33 @@ fn void pageTests(ref Tally t)
     check(t: t, ok: after.y < before.y, what: "...and the log scrolls in its own box (${before.y} -> ${after.y})");
     UiRect logAfter = ui.elementRect(handle: log);
     check(t: t, ok: logAfter.y == logBox.y, what: "...while the page around it stays put");
+
+    section(what: "a page: a log follows its newest line");
+    string lines = "";
+    int32 n = 0;
+    while (n < 19) {
+        lines = "${lines}<p>line</p>";
+        n = n + 1;
+    }
+    string withNewest = "${lines}<p id='newest'>newest</p>";
+    ui.setInnerRml(handle: log, rml: withNewest);
+    ui.scrollToEnd(handle: log);   // in the same frame as the write, before any update
+    ui.update();
+    int32 newest = ui.findElement(elementId: "newest");
+    UiRect nr = ui.elementRect(handle: newest);
+    UiRect lr = ui.elementRect(handle: log);
+    float32 newestBottom = nr.y + nr.height;
+    float32 logBottom = lr.y + lr.height;
+    check(t: t, ok: newestBottom > logBottom - 1.0 && newestBottom < logBottom + 1.0,
+          what: "scrollToEnd right after a write shows the newest line at the log's bottom (${newestBottom} of ${logBottom})");
+    Seen scrolled = collect(ui: ui);
+    check(t: t, ok: scrolled.count == 0, what: "...and the scroll raises nothing the program hears (${scrolled.count})");
+    ui.scrollToEnd(handle: 0);
+    ui.scrollToEnd(handle: page);
+    ui.update();
+    UiRect pageAfter = ui.elementRect(handle: page);
+    check(t: t, ok: pageAfter.y == 0.0, what: "...a no-op for an unknown handle and for a box that does not scroll");
+
     pageLegTests(t: t, ui: ui, page: page);
     ui.close();
     check(t: t, ok: !ui.isOpen(), what: "the page closes");

@@ -1,7 +1,7 @@
 file @compileFor(!ARCH_WASM32);
 // The native leg's half of the suite: how a click and a wheel are injected (RmlUi's own input), the font, the verdict,
-// and the checks only this leg can make — the recorded commands and textures, typing, the first-press focus rule, a
-// `checked` write's change event, and a page sized by `setSize`.
+// and the checks only this leg can make — the recorded commands and textures, typing, the first-press focus rule, and
+// a page sized by `setSize`.
 
 import {
     Tally, check, section, Seen, collect, press,
@@ -118,18 +118,6 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     check(t: t, ok: ui.focusedElement() == 0 && !ui.focusHeld(), what: "the document alone holds no ring");
     press(ui: ui, key: UI_KEY_DOWN);
     check(t: t, ok: ui.focusedElement() == first, what: "...and the first arrow lands on the first button");
-
-    // ⚠️ PINNED, NOT WANTED: host.kama's one known difference between the legs. When @kama/rmlui gains a quiet attribute
-    // write, this check fails, and the contract's note goes with it.
-    section(what: "native: writing `checked` raises a change");
-    int32 agree = ui.bindElement(elementId: "agree");
-    collect(ui: ui);
-    ui.setElementAttribute(handle: agree, name: "checked", value: "");
-    Seen wrote = collect(ui: ui);
-    check(t: t, ok: wrote.changes == 1 && wrote.firstTarget == agree,
-          what: "RmlUi dispatches it from the attribute; @kama/rmlui 0.1.0 has no quiet write for one (${wrote.changes})");
-    ui.removeElementAttribute(handle: agree, name: "checked");
-    collect(ui: ui);
 }
 
 fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)

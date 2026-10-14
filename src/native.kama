@@ -206,6 +206,7 @@ type value UiContext implements UiHost {
         float64 now = this.lib.time();
         this.lib.setTime(seconds: now + 1.0 / 60.0);
         this.ctx.update();
+        this.followEnds();
     }
 
     public unsafe fn void updateAt(float64 seconds)
@@ -213,6 +214,40 @@ type value UiContext implements UiHost {
         if (this.ready == 0) { return; }
         this.lib.setTime(seconds: seconds);
         this.ctx.update();
+        this.followEnds();
+    }
+
+    // `scrollToEnd` (host.kama) marks; this honours the marks, AFTER the layout pass. ⚠️ NOT AT THE CALL: RmlUi measures
+    // only in `update`, so `scrollHeight` at the call would be the last layout's — without the line just written — and a
+    // log would follow one line behind. The mark is an attribute written quietly: state on RmlUi's side of the seam, as
+    // everything a `value` context must remember is. The scroll this makes raises RmlUi's `scroll` event, which no
+    // binding listens for, so nothing reaches `pollEvent`.
+    unsafe fn void followEnds()
+    {
+        if (!this.doc.isLive()) { return; }
+        Element root = this.doc.root();
+        string marked = "[data-kama-ui-end]";
+        string mark = "data-kama-ui-end";
+        int32 left = 4096;   // more marks than a document has elements cannot happen; a bound, not a budget
+        while (left > 0) {
+            Optional<Element> e = root.query(selector: marked);
+            match (e) {
+                case None: { return; }
+                case Some(value: el): {
+                    el.removeAttributeQuietly(name: mark);
+                    el.setScrollTop(top: el.scrollHeight());
+                }
+            };
+            left = left - 1;
+        }
+    }
+
+    public unsafe fn void scrollToEnd(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        string mark = "data-kama-ui-end";
+        string on = "";
+        match (e) { case Some(value: el): { el.setAttributeQuietly(name: mark, value: on); } case None: { } };
     }
 
     public unsafe fn void render()
@@ -405,9 +440,10 @@ type value UiContext implements UiHost {
         return match (e) { case Some(value: el): el.setProperty(name: name, value: value); case None: false; };
     }
 
-    // ⚠️ `value` GOES THROUGH THE QUIET WRITE: on a control it is the state `setElementText` writes, and RmlUi raises a
-    // change for it (a range always, a text field when it sanitizes). `checked` cannot be made quiet from here — see
-    // host.kama.
+    // ⚠️ EVERY ATTRIBUTE IS WRITTEN QUIETLY (CHANGED in 0.2.1): RmlUi raises a change for a write to a control's state
+    // — a checkbox's or a radio's `checked`, a range's or a field's `value` — where a browser raises none for a script's
+    // write. @kama/rmlui 0.1.1's quiet writes queue none, so the legs agree. `value` on a control goes through the quiet
+    // `setValue`, as `setElementText` does.
     public unsafe fn void setElementAttribute(int32 handle, const ref string name, const ref string value)
     {
         Optional<Element> e = this.bound(handle: handle);
@@ -415,7 +451,7 @@ type value UiContext implements UiHost {
             case None: { }
             case Some(value: el): {
                 if (name == "value" && el.setValue(value: value, quiet: true)) { return; }
-                el.setAttribute(name: name, value: value);
+                el.setAttributeQuietly(name: name, value: value);
             }
         };
     }
@@ -429,7 +465,7 @@ type value UiContext implements UiHost {
             case Some(value: el): {
                 string none = "";
                 if (name == "value" && el.setValue(value: none, quiet: true)) { return; }
-                el.removeAttribute(name: name);
+                el.removeAttributeQuietly(name: name);
             }
         };
     }

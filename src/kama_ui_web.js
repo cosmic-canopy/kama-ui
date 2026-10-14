@@ -677,6 +677,15 @@ mergeInto(LibraryManager.library, {
         return KamaUi.name(id, null);
     },
 
+    // `scrollToEnd` (0.2.1): at once, because reading `scrollHeight` makes the browser lay out what was just written —
+    // the native leg has to wait for its next update for the same number. The `scroll` event this raises is not one a
+    // binding hears (`heard`).
+    kama_ui_web_scroll_to_end__deps: ['$KamaUi'],
+    kama_ui_web_scroll_to_end: function (handle) {
+        var el = KamaUi.el(handle);
+        if (el) el.scrollTop = el.scrollHeight;
+    },
+
     // ⚠️ TWO ATTRIBUTES ARE STATE NATIVELY AND ONLY A DEFAULT HERE. RmlUi keeps a checkbox's state in `checked` and a
     // control's in `value`; a browser reads either attribute only until a person touches the control (its "dirty"
     // flag), after which writing the attribute changes nothing on screen. So both also write the property — quietly,

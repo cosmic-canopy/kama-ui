@@ -5,7 +5,34 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.0] — unreleased
+## [0.2.1] — unreleased
+
+Built on @kama/rmlui 0.1.1 (`"@kama/rmlui": { "version": "^0.1.1" }`), which adds element scrolling, quiet attribute
+writes, and a range `change` only when the value moved. The legs now have no known difference in what reaches
+`pollEvent`.
+
+### Added
+
+- `scrollToEnd(handle)`: scroll an element to the end of its content, so a log can follow its newest line. Write, then
+  ask in the same frame, and the next frame drawn shows the end on both legs. The web sets `scrollTop` to
+  `scrollHeight` at once, since a browser lays out on demand. Natively the request is a quiet mark on the element,
+  honoured in the next `update` after the layout pass, because RmlUi measures only there. Scrolling at the call would
+  follow one line behind. The `scroll` event it raises reaches no binding.
+
+### Changed
+
+- Native `setElementAttribute` / `removeElementAttribute` write every attribute quietly. Writing `checked` no longer
+  raises a change, matching the web. This is the 0.2.0 known difference, now gone and unpinned from the native suite.
+- Native range: a step past either end, or a drag within one step, no longer raises a change (@kama/rmlui drops it).
+  It is one change per edit on both legs. This is 0.2.0's other known difference, also gone.
+
+### Tests
+
+- Native 165 checks (debug, release, AddressSanitizer), web 165 (headless Firefox). The new shared checks: no event
+  from `checked` writes, none from a range stepped past its end, and `scrollToEnd` right after a rewrite, before any
+  update. Scrolling at the call instead fails the last one natively: the newest line ends 240 px below the log.
+
+## [0.2.0] — 2026-10-14
 
 What a desktop-tool-style page needs (a library, editors, tables, live logs), on both legs. `src/host.kama` marks each
 addition with its version.
@@ -66,7 +93,7 @@ addition with its version.
   0.1.0's listener handling, its event mapping and its viewport memo. With its edit filter off, the native leg counts
   two changes for a radio choice and one for ENTER.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-10-13
 
 The first version: the UI seam earlier kama games built for their menus, as a package. README.md, "Where it came
 from", lists every change.
