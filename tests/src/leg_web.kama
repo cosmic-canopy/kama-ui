@@ -1,19 +1,28 @@
 file @compileFor(ARCH_WASM32);
 // The web leg's half of the suite: a click injected the way a person's arrives — the browser's own hit test
-// (document.elementFromPoint) and a bubbling MouseEvent, from tests/web/kama_ui_test.js — and the verdict written where
-// a headless browser's --dump-dom reads it.
+// (document.elementFromPoint) and a bubbling MouseEvent, from tests/web/kama_ui_test.js — a wheel as the browser
+// applies one, what a rewrite or a new document must let go of, a page's stage, and the verdict written where a
+// headless browser's --dump-dom reads it.
 
 import {
-    Tally, check, section,
+    Tally, check, section, Seen, collect, changesOn,
     core::println,
     ui::UiContext, ui::UiRect,
 };
-export { fontPath, injectClick, legTests, report };
+export { fontPath, injectClick, injectScroll, typeInto, pick, legTests, pageLegTests, report };
 
 extern "kama_ui_test.h";
 extern fn int32 kama_ui_test_click_at(float32 x, float32 y);
 extern fn void  kama_ui_test_report(int32 run, int32 failed);
 extern fn int32 kama_ui_test_attr_ends(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> attr, UnsafeConstPtr<cchar> suffix);
+extern fn int32 kama_ui_test_scroll_at(float32 x, float32 y, float32 notches);
+extern fn int32 kama_ui_test_hold(UnsafeConstPtr<cchar> id);
+extern fn int32 kama_ui_test_fire_held();
+extern fn void  kama_ui_test_window(UnsafePtr<float32> width, UnsafePtr<float32> height);
+extern fn int32 kama_ui_test_stage_is_page();
+extern fn int32 kama_ui_test_type(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> text);
+extern fn int32 kama_ui_test_pick(UnsafeConstPtr<cchar> select_id, UnsafeConstPtr<cchar> option_id);
+extern fn int32 kama_ui_test_drag(UnsafeConstPtr<cchar> id, int32 steps);
 
 // Ignored on this leg: the browser takes its faces from the page's @font-face.
 fn string fontPath() { return ""; }
@@ -28,6 +37,39 @@ unsafe fn bool attrEnds(const ref string id, const ref string attr, const ref st
     return kama_ui_test_attr_ends(id: id.cstr(), attr: attr.cstr(), suffix: suffix.cstr()) != 0;
 }
 
+// A synthetic WheelEvent scrolls nothing (the browser's own scroll is a default action of a trusted one), so the
+// helper does what the browser would: it scrolls the nearest scrollable box under the point.
+unsafe fn bool injectScroll(ref UiContext ui, float32 x, float32 y, float32 notches)
+{
+    return kama_ui_test_scroll_at(x: x, y: y, notches: notches) != 0;
+}
+
+// A browser types into its own field and reports it, so these fire what it would: an `input` per character and the
+// `change` of the field letting go; the option selected, then `input` and `change`.
+unsafe fn void typeInto(ref UiContext ui, const ref string id, const ref string text)
+{
+    kama_ui_test_type(id: id.cstr(), text: text.cstr());
+}
+
+unsafe fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId)
+{
+    kama_ui_test_pick(select_id: selectId.cstr(), option_id: optionId.cstr());
+}
+
+unsafe fn bool drag(const ref string id, int32 steps) { return kama_ui_test_drag(id: id.cstr(), steps: steps) != 0; }
+
+unsafe fn bool hold(const ref string id) { return kama_ui_test_hold(id: id.cstr()) != 0; }
+unsafe fn bool fireHeld() { return kama_ui_test_fire_held() != 0; }
+unsafe fn bool stageIsPage() { return kama_ui_test_stage_is_page() != 0; }
+
+unsafe fn UiRect window()
+{
+    float32 w = 0;
+    float32 h = 0;
+    kama_ui_test_window(width: addr(of: w), height: addr(of: h));
+    return UiRect.make(x: 0.0, y: 0.0, width: w, height: h);
+}
+
 fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
 {
     section(what: "web: the document is real DOM");
@@ -35,6 +77,59 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     check(t: t, ok: attrEnds(id: "pic", attr: "src", suffix: "/img/dot.webp"),
           what: "setImageRewrite turned the document's /img/dot.pam into /img/dot.webp before the browser fetched it");
     check(t: t, ok: attrEnds(id: "first", attr: "id", suffix: "first"), what: "the bound button is an element with its id");
+
+    section(what: "web: attributes");
+    int32 pic = ui.bindElement(elementId: "pic");
+    ui.setElementAttribute(handle: pic, name: "src", value: "/img/dot2.pam");
+    check(t: t, ok: attrEnds(id: "pic", attr: "src", suffix: "/img/dot2.webp"), what: "an `src` written as an attribute is rewritten too");
+    int32 agree = ui.bindElement(elementId: "agree");
+    collect(ui: ui);
+    ui.setElementAttribute(handle: agree, name: "checked", value: "");
+    Seen wrote = collect(ui: ui);
+    check(t: t, ok: wrote.count == 0, what: "writing `checked` raises nothing here (natively it does: host.kama) (${wrote.count})");
+    ui.removeElementAttribute(handle: agree, name: "checked");
+
+    section(what: "web: a slider's release is no edit");
+    int32 level = ui.bindElement(elementId: "level");
+    collect(ui: ui);
+    check(t: t, ok: drag(id: "level", steps: 2), what: "the range is dragged two steps and let go");
+    int32 dragged = changesOn(ui: ui, handle: level);
+    check(t: t, ok: dragged == 2, what: "...two changes, live, and none for the release (${dragged})");
+
+    section(what: "web: what a rewrite or a new document lets go of hears nothing");
+    int32 list = ui.bindElement(elementId: "list");
+    int32 rowB = ui.bindElement(elementId: "row-b");
+    check(t: t, ok: rowB > 0 && hold(id: "row-b"), what: "a bound row is held");
+    ui.setInnerRml(handle: list, rml: "<div id='row-c'><p>Gamma</p></div>");
+    collect(ui: ui);
+    fireHeld();
+    Seen afterRewrite = collect(ui: ui);
+    check(t: t, ok: afterRewrite.count == 0, what: "a row a rewrite released keeps no listener (${afterRewrite.count} events)");
+    check(t: t, ok: hold(id: "field"), what: "the text field is held");
+    ui.closeDocument();
+    fireHeld();
+    Seen afterClose = collect(ui: ui);
+    check(t: t, ok: afterClose.count == 0,
+          what: "a field from a closed document keeps none of its click, input and change listeners (${afterClose.count})");
+    // The suite closes the document next, so it has to be there.
+    ui.loadDocument(path: "tests/fixtures/seam.rml");
+}
+
+fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
+{
+    section(what: "web: a page's stage is the window");
+    check(t: t, ok: stageIsPage(), what: "#ui-stage is pinned to the window's edges, unscaled and shown, so CSS follows a resize");
+    UiRect win = window();
+    UiRect pr = ui.elementRect(handle: page);
+    check(t: t, ok: pr.width == win.width && pr.height == win.height,
+          what: "the page fills the window (${pr.width} x ${pr.height} of ${win.width} x ${win.height})");
+    ui.setViewport(offsetX: 50.0, offsetY: 50.0, scale: 2.0, visible: false);
+    UiRect hidden = ui.elementRect(handle: page);
+    check(t: t, ok: hidden.width == 0.0, what: "setViewport(visible: false) hides it");
+    ui.setViewport(offsetX: 50.0, offsetY: 50.0, scale: 2.0, visible: true);
+    UiRect again = ui.elementRect(handle: page);
+    check(t: t, ok: again.x == 0.0 && again.width == pr.width && stageIsPage(),
+          what: "...and true shows it again, neither moved nor scaled (x ${again.x}, ${again.width} wide)");
 }
 
 unsafe fn int32 report(ref Tally t)

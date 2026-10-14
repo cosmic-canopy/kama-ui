@@ -25,11 +25,11 @@ export { UiContext };
 
 extern "kama_ui_web.h";
 
-extern fn int32 kama_ui_web_init(int32 width, int32 height);
+extern fn int32 kama_ui_web_init(int32 width, int32 height, int32 page);
 extern fn int32 kama_ui_web_set_document(UnsafeConstPtr<cchar> html);
 extern fn void  kama_ui_web_set_inner(int32 handle, UnsafeConstPtr<cchar> html);
 extern fn int32 kama_ui_web_bind(UnsafeConstPtr<cchar> element_id);
-extern fn int32 kama_ui_web_poll_event(UnsafePtr<int32> handle);
+extern fn int32 kama_ui_web_poll_event(UnsafePtr<int32> handle, UnsafePtr<int32> target);
 extern fn void  kama_ui_web_set_viewport(float32 offset_x, float32 offset_y, float32 scale, int32 visible);
 extern fn int32 kama_ui_web_element_rect(int32 handle, UnsafePtr<float32> x, UnsafePtr<float32> y, UnsafePtr<float32> width, UnsafePtr<float32> height);
 extern fn float32 kama_ui_web_element_value(int32 handle);
@@ -48,9 +48,12 @@ extern fn void  kama_ui_web_set_text(int32 handle, UnsafeConstPtr<cchar> text);
 extern fn void  kama_ui_web_close_document();
 extern fn int32 kama_ui_web_set_property(int32 handle, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
 extern fn void  kama_ui_web_set_image_rewrite(UnsafeConstPtr<cchar> native_ext, UnsafeConstPtr<cchar> web_ext);
-
-// The longest text a control hands back (`elementText`), as natively.
-comptime int32 UI_TEXT_MAX = 512;
+// 0.2.0 (kama_ui_web.h).
+extern fn int32 kama_ui_web_element_id(int32 handle, UnsafePtr<cchar> buffer, int32 capacity);
+extern fn void  kama_ui_web_set_attribute(int32 handle, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
+extern fn void  kama_ui_web_remove_attribute(int32 handle, UnsafeConstPtr<cchar> name);
+extern fn int32 kama_ui_web_element_checked(int32 handle);
+extern fn int32 kama_ui_web_find(UnsafeConstPtr<cchar> element_id);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -69,6 +72,22 @@ fn UiEventKind kindOf(int32 raw)
     return UiEventKind::None;
 }
 
+// A zeroed buffer for a string the JS has already measured: `n` bytes and the NUL. ⚠️ MEASURED FIRST, NOT CAPPED:
+// each string-returning JS call answers its value's full UTF-8 length whatever buffer it is handed, so it is asked
+// once with none and once with one exactly that size. Nothing runs in between (the page is single-threaded and
+// neither call yields), so the value cannot change size under the second read.
+fn DynamicArray<uint8> sized(int32 n)
+{
+    isize size = cast<isize>(n) + 1;
+    DynamicArray<uint8> buf = DynamicArray.withCapacity(capacity: size);
+    isize i = 0;
+    while (i < size) {
+        buf.add(item: 0ui8);
+        i = i + 1;
+    }
+    return buf;
+}
+
 // A `value` wrapping an int32 flag, exactly as the native context is, and for the same reason: there
 // is one host, ownership lives on the other side of the seam, and `close()` is explicit.
 type value UiContext implements UiHost {
@@ -80,7 +99,14 @@ type value UiContext implements UiHost {
     // filesystem, which is the one place this leg's asset story genuinely differs from the native one.
     public unsafe ctor open(int32 width, int32 height, const ref string fontPath)
     {
-        this.ready = kama_ui_web_init(width: width, height: height);
+        this.ready = kama_ui_web_init(width: width, height: height, page: 0);
+    }
+
+    // ADDED (0.2.0): a PAGE (host.kama). `width` and `height` are ignored here as `fontPath` is: the stage is pinned to
+    // the window's four edges, so CSS sizes it and follows every resize, and it is shown at once, unscaled.
+    public unsafe ctor openPage(int32 width, int32 height, const ref string fontPath)
+    {
+        this.ready = kama_ui_web_init(width: width, height: height, page: 1);
     }
 
     public fn bool isOpen() { return this.ready != 0; }
@@ -139,7 +165,7 @@ type value UiContext implements UiHost {
     }
 
     // Real on this leg, where `loadFont` is not: the browser has no seam for a face and every seam
-    // for markup.
+    // for markup. The JS releases the bindings inside before it writes (host.kama).
     public unsafe fn void setInnerRml(int32 handle, const ref string rml)
     {
         if (this.ready == 0) { return; }
@@ -147,7 +173,7 @@ type value UiContext implements UiHost {
     }
 
     // The stage is sized once, at `open` — so this has nothing left to do. A resize moves the letterbox,
-    // which is `setViewport`, not a relayout.
+    // which is `setViewport`, not a relayout. A page's stage is the window, which CSS resizes by itself.
     public unsafe fn void setSize(int32 width, int32 height) { }
 
     public unsafe fn void setViewport(float32 offsetX, float32 offsetY, float32 scale, bool visible)
@@ -257,13 +283,15 @@ type value UiContext implements UiHost {
         kama_ui_web_set_class(handle: handle, name: name.cstr(), on: flag);
     }
 
+    // The target is walked in the JS, at this poll, as natively (types.kama, `UiEvent.target`).
     public unsafe fn Optional<UiEvent> pollEvent()
     {
         if (this.ready == 0) { return Optional::None; }
         int32 handle = 0;
-        int32 raw = kama_ui_web_poll_event(handle: addr(of: handle));
+        int32 target = 0;
+        int32 raw = kama_ui_web_poll_event(handle: addr(of: handle), target: addr(of: target));
         if (raw == 0) { return Optional::None; }
-        UiEvent ev = UiEvent.make(kind: kindOf(raw: raw), element: handle);
+        UiEvent ev = UiEvent.make(kind: kindOf(raw: raw), element: handle, target: target);
         return Optional::Some(value: ev);
     }
 
@@ -296,17 +324,16 @@ type value UiContext implements UiHost {
         return kama_ui_web_text_focused() != 0;
     }
 
+    // CHANGED (0.2.0): the whole value, as natively — measured, then read into a buffer that size (`sized`). It was
+    // cut at 511 bytes, which a text editor's buffer passes in a paragraph.
     public unsafe fn string elementText(int32 handle)
     {
         if (this.ready == 0) { return ""; }
-        InlineArray<uint8>#(UI_TEXT_MAX) buf = [0ui8; (UI_TEXT_MAX)];
-        UnsafePtr raw = cast<UnsafePtr>(addr(of: buf[0]));
-        int32 full = kama_ui_web_element_text(handle: handle, buffer: cast<UnsafePtr<cchar>>(raw), capacity: UI_TEXT_MAX);
-        int32 n = full;
-        if (n > UI_TEXT_MAX - 1) { n = UI_TEXT_MAX - 1; }
+        int32 n = kama_ui_web_element_text(handle: handle, buffer: null, capacity: 0);
         if (n <= 0) { return ""; }
-        UnsafeConstPtr<uint8> bytes = cast<UnsafeConstPtr<uint8>>(raw);
-        return kama_string_from_raw(src: bytes, start: 0, len: cast<isize>(n));
+        DynamicArray<uint8> buf = sized(n: n);
+        kama_ui_web_element_text(handle: handle, buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+        return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
     }
 
     public unsafe fn void setElementText(int32 handle, const ref string text)
@@ -316,6 +343,43 @@ type value UiContext implements UiHost {
     }
 
     public unsafe fn void setDpRatio(float32 ratio) { }
+
+    // ---- 0.2.0 (host.kama) ----
+
+    public unsafe fn int32 findElement(const ref string elementId)
+    {
+        if (this.ready == 0) { return 0; }
+        return kama_ui_web_find(element_id: elementId.cstr());
+    }
+
+    // Read as `elementText` is: measured, then read in full.
+    public unsafe fn string elementId(int32 handle)
+    {
+        if (this.ready == 0) { return ""; }
+        int32 n = kama_ui_web_element_id(handle: handle, buffer: null, capacity: 0);
+        if (n <= 0) { return ""; }
+        DynamicArray<uint8> buf = sized(n: n);
+        kama_ui_web_element_id(handle: handle, buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+        return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
+    }
+
+    public unsafe fn void setElementAttribute(int32 handle, const ref string name, const ref string value)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_set_attribute(handle: handle, name: name.cstr(), value: value.cstr());
+    }
+
+    public unsafe fn void removeElementAttribute(int32 handle, const ref string name)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_remove_attribute(handle: handle, name: name.cstr());
+    }
+
+    public unsafe fn bool elementChecked(int32 handle)
+    {
+        if (this.ready == 0) { return false; }
+        return kama_ui_web_element_checked(handle: handle) != 0;
+    }
 
     public unsafe fn void closeDocument()
     {

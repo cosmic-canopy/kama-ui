@@ -21,6 +21,9 @@ the contract. These are the working rules.
   point names it in `__deps`.
 - **Keep `UiContext` a `value`.** Programs keep copies in module statics, which may own nothing. Anything a backend
   must remember lives on the other side of the seam: `@kama/rmlui`'s bindings natively, `$KamaUi` on the web.
+- **On the web every entry point resolves a handle through `KamaUi.el(handle)`**, never `els[h - 1]`. It re-finds a
+  released element by its id (what @kama/rmlui's bindings do natively), which is what keeps a stale handle a no-op.
+  A binding's listeners go on and come off through `KamaUi.heard`, one list, so a detach can never miss an event.
 - **`ui::uidoc` is pure** (string in, string out). Its suite runs on both legs. A new RCSS/CSS disagreement goes there,
   with a check, never into a per-screen special case.
 - **This package depends on `@kama/rmlui` `^0.1.0` from the registry** (FreeType comes with it). To work against

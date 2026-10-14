@@ -1,6 +1,7 @@
 file @compileFor(!ARCH_WASM32);
-// The native leg's half of the suite: how a click is injected (RmlUi's own input), the font, the verdict, and the
-// checks only this leg can make — the recorded commands and textures, typing, and the first-press focus rule.
+// The native leg's half of the suite: how a click and a wheel are injected (RmlUi's own input), the font, the verdict,
+// and the checks only this leg can make — the recorded commands and textures, typing, the first-press focus rule, a
+// `checked` write's change event, and a page sized by `setSize`.
 
 import {
     Tally, check, section, Seen, collect, press,
@@ -8,7 +9,7 @@ import {
     ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect,
     ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE,
 };
-export { fontPath, injectClick, legTests, report };
+export { fontPath, injectClick, injectScroll, typeInto, pick, legTests, pageLegTests, report };
 
 // RmlUi's sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence (tests/fonts/SOURCES).
 // Paths are relative to the package root, where tools/test.sh runs.
@@ -23,6 +24,43 @@ fn bool injectClick(ref UiContext ui, float32 x, float32 y)
     ui.mouseButton(button: 0, down: false);
     ui.update();
     return true;
+}
+
+// The wheel as a person turns it: the pointer over the point first (it decides what scrolls), then the notches, then a
+// second of updates, since RmlUi scrolls smoothly. True: there is no page to miss.
+fn bool injectScroll(ref UiContext ui, float32 x, float32 y, float32 notches)
+{
+    ui.mouseMove(x: x, y: y);
+    ui.update();
+    ui.mouseWheel(delta: notches);
+    int32 i = 0;
+    while (i < 60) {
+        ui.update();
+        i = i + 1;
+    }
+    return true;
+}
+
+// Typing as a person does: the ring on the control (found, so nothing new listens), then each character, then the
+// update that lays it out.
+fn void typeInto(ref UiContext ui, const ref string id, const ref string text)
+{
+    int32 h = ui.findElement(elementId: id);
+    ui.focusElement(handle: h);
+    foreach (char c in text.chars()) { ui.typeChar(codepoint: cast<int32>(c)); }
+    ui.update();
+}
+
+// Choosing as a person does: a click opens the select, a second lands on the option in the box it opened.
+fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId)
+{
+    int32 s = ui.findElement(elementId: selectId);
+    UiRect sr = ui.elementRect(handle: s);
+    injectClick(ui: ui, x: sr.x + sr.width * 0.5, y: sr.y + sr.height * 0.5);
+    ui.update();
+    int32 o = ui.findElement(elementId: optionId);
+    UiRect optionBox = ui.elementRect(handle: o);
+    injectClick(ui: ui, x: optionBox.x + optionBox.width * 0.5, y: optionBox.y + optionBox.height * 0.5);
 }
 
 fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
@@ -80,6 +118,31 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     check(t: t, ok: ui.focusedElement() == 0 && !ui.focusHeld(), what: "the document alone holds no ring");
     press(ui: ui, key: UI_KEY_DOWN);
     check(t: t, ok: ui.focusedElement() == first, what: "...and the first arrow lands on the first button");
+
+    // ⚠️ PINNED, NOT WANTED: host.kama's one known difference between the legs. When @kama/rmlui gains a quiet attribute
+    // write, this check fails, and the contract's note goes with it.
+    section(what: "native: writing `checked` raises a change");
+    int32 agree = ui.bindElement(elementId: "agree");
+    collect(ui: ui);
+    ui.setElementAttribute(handle: agree, name: "checked", value: "");
+    Seen wrote = collect(ui: ui);
+    check(t: t, ok: wrote.changes == 1 && wrote.firstTarget == agree,
+          what: "RmlUi dispatches it from the attribute; @kama/rmlui 0.1.0 has no quiet write for one (${wrote.changes})");
+    ui.removeElementAttribute(handle: agree, name: "checked");
+    collect(ui: ui);
+}
+
+fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
+{
+    section(what: "native: a page is the size setSize gives it");
+    UiRect opened = ui.elementRect(handle: page);
+    check(t: t, ok: opened.width == 800.0 && opened.height == 600.0,
+          what: "it fills the 800 x 600 it opened at (${opened.width} x ${opened.height})");
+    ui.setSize(width: 1024, height: 700);
+    ui.update();
+    UiRect resized = ui.elementRect(handle: page);
+    check(t: t, ok: resized.width == 1024.0 && resized.height == 700.0,
+          what: "...and reflows to the window's new size (${resized.width} x ${resized.height})");
 }
 
 fn int32 report(ref Tally t)

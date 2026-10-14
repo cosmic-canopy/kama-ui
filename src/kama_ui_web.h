@@ -1,6 +1,6 @@
 // kama_ui_web.h — the web half of the UI seam (see src/host.kama).
 //
-// `kama_ui_web_set_image_rewrite` is this package's addition to the seam.
+// `kama_ui_web_set_image_rewrite` is this package's addition to the seam; 0.2.0's are marked below.
 //
 // DECLARATIONS ONLY. The bodies live in kama_ui_web.js and are linked by emcc's `--js-library`, which
 // arrives from this package's `jsLibraries` and propagates to every consumer.
@@ -53,7 +53,10 @@
 //
 // The shell owns `#ui-stage` and `#ui-root`; this creates them only if the page did not, so a program
 // still shows its UI under emcc's stock shell.
-extern int32_t kama_ui_web_init(int32_t width, int32_t height);
+//
+// `page` (0.2.0) non-zero: the stage is the WINDOW instead — pinned to its four edges, sized and resized by CSS, shown
+// at once and never scaled — and `width`/`height` are ignored. `kama_ui_web_set_viewport` then only shows and hides it.
+extern int32_t kama_ui_web_init(int32_t width, int32_t height, int32_t page);
 
 // Replace the live document. ⚠️ INVALIDATES EVERY HANDLE `kama_ui_web_bind` HAS RETURNED, exactly as
 // the native backend's document load does — the bindings are dropped here rather than left dangling.
@@ -61,6 +64,8 @@ extern int32_t kama_ui_web_set_document(const char* html);
 
 // Replace a bound element's content. ⚠️ DESTROYS ITS SUBTREE, so a handle bound to something INSIDE
 // it is stale afterwards. Binding what this call just created is the other order and is fine.
+// (0.2.0) Those bindings are RELEASED before the write — element and listeners — and every entry point re-finds a
+// released handle by its id, or treats it as unknown.
 extern void kama_ui_web_set_inner(int32_t handle, const char* html);
 
 // Name an element once, get a dense 1-based integer handle. 0 when no element has that id. Binding
@@ -90,7 +95,10 @@ extern int32_t kama_ui_web_focus_held(void);
 // for an `extern`** — so the emitted C called an undeclared function and clang refused it under C99. Every `extern fn` in web.kama needs its line here.
 extern void kama_ui_web_focus_document(void);
 
-extern int32_t kama_ui_web_poll_event(int32_t* handle);
+// `target` (0.2.0): the handle for the nearest element with an id from the event's target up to the bound element,
+// minted without a listener if nobody bound it; 0 when the target has left the document since. Both outputs are
+// written on every path.
+extern int32_t kama_ui_web_poll_event(int32_t* handle, int32_t* target);
 
 // Where the overlay sits over the canvas, and whether it is on screen at all.
 //
@@ -120,6 +128,8 @@ extern void kama_ui_web_shutdown(void);
 extern int32_t kama_ui_web_focus_element(int32_t handle);
 extern int32_t kama_ui_web_focused(void);
 extern int32_t kama_ui_web_text_focused(void);
+// Writes at most `capacity - 1` bytes and a NUL, and returns the value's FULL length in bytes whatever the capacity:
+// call it with no buffer to measure, then with `length + 1` (0.2.0; there was a 512-byte buffer).
 extern int32_t kama_ui_web_element_text(int32_t handle, char* buffer, int32_t capacity);
 extern void kama_ui_web_set_text(int32_t handle, const char* text);
 extern void kama_ui_web_close_document(void);
@@ -128,5 +138,17 @@ extern int32_t kama_ui_web_set_property(int32_t handle, const char* name, const 
 // Every `<img src>` inserted from now on (documents and set_inner) has a trailing `native_ext` rewritten to
 // `web_ext`, in the markup before the browser parses it. "" for either turns it off.
 extern void kama_ui_web_set_image_rewrite(const char* native_ext, const char* web_ext);
+
+// ---- 0.2.0 ----
+// The id a handle names, measured and read as `kama_ui_web_element_text` is.
+extern int32_t kama_ui_web_element_id(int32_t handle, char* buffer, int32_t capacity);
+// One attribute set or removed. `checked` and `value` also write the control's live property (the attribute is only
+// its default in a browser); `src` gets the image rewrite.
+extern void kama_ui_web_set_attribute(int32_t handle, const char* name, const char* value);
+extern void kama_ui_web_remove_attribute(int32_t handle, const char* name);
+// 1 when the handle names an `<input>` whose `.checked` is true.
+extern int32_t kama_ui_web_element_checked(int32_t handle);
+// `kama_ui_web_bind` without the listener: the same handle for the id, 0 when no element has it.
+extern int32_t kama_ui_web_find(const char* element_id);
 
 #endif  // KAMA_UI_WEB_H

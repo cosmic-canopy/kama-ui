@@ -12,4 +12,21 @@ extern int32_t kama_ui_test_click_at(float x, float y);
 extern void kama_ui_test_report(int32_t run, int32_t failed);
 // 1 when the element with this id has the attribute and its value ends with `suffix` (what the image rewrite did).
 extern int32_t kama_ui_test_attr_ends(const char* id, const char* attr, const char* suffix);
+// Scroll the nearest scrollable box under (x, y) — framebuffer pixels — by `notches` x 40 CSS pixels, which is what the
+// browser does for a wheel itself (a synthetic WheelEvent scrolls nothing). 1 when something scrolled.
+extern int32_t kama_ui_test_scroll_at(float x, float y, float notches);
+// Keep the element with this id, to fire at after a rewrite or a new document has let it go. 1 when found.
+extern int32_t kama_ui_test_hold(const char* id);
+// Dispatch a bubbling click, input and change at the held element. 1 when one is held.
+extern int32_t kama_ui_test_fire_held(void);
+// The window's size (the viewport less any scrollbar), in framebuffer pixels.
+extern void kama_ui_test_window(float* width, float* height);
+// 1 when #ui-stage is a page's: pinned to the four edges with no size of its own, unscaled, shown, the window's size.
+extern int32_t kama_ui_test_stage_is_page(void);
+// What a browser reports for a person's edit, fired at the element with this id (a synthetic key types nothing):
+// typing is an `input` per character then the `change` of the field letting go; picking selects the option, then
+// `input` and `change`; a drag is an `input` per step then the `change` of the release. 1 when the element exists.
+extern int32_t kama_ui_test_type(const char* id, const char* text);
+extern int32_t kama_ui_test_pick(const char* select_id, const char* option_id);
+extern int32_t kama_ui_test_drag(const char* id, int32_t steps);
 #endif

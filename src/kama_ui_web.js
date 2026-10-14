@@ -1,7 +1,8 @@
 // kama_ui_web.js — the web UI backend, as an emcc `--js-library`. The DOM and CSS, and nothing else: no JS library.
 //
 // Two changes from the seam's earlier copies: the image rewrite (`kama_ui_web_set_image_rewrite`) and text controls in
-// the focus ring (`navItems`).
+// the focus ring (`navItems`). 0.2.0 added a page (`kama_ui_web_init`'s `page`), an event's target, attributes, the
+// checked state, an uncapped `element_text`, and bindings that follow their id across rewrites (`$KamaUi.el`).
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -21,12 +22,13 @@ mergeInto(LibraryManager.library, {
     // Per-page state. `$`-prefixed so emcc treats it as a library object rather than a function, and
     // every entry point below names it in `__deps` or it is dead-code-eliminated away.
     $KamaUi: {
-        stage: null,       // the fixed virtual-resolution box that carries the letterbox transform
+        stage: null,       // the fixed virtual-resolution box that carries the letterbox transform — or, for a page, the window
         root: null,        // the document's own <body>, inside it
-        els: [],           // handle N -> els[N - 1]; dense and 1-based, matching the native shim
+        page: false,       // opened as a page (host.kama): no letterbox, no scale, shown from the start
+        els: [],           // handle N -> els[N - 1]; dense and 1-based, matching the native shim. null once released
         ids: [],           // parallel to els: the id each handle was bound to
-        listeners: [],     // parallel to els: so a document swap can detach before dropping
-        events: [],        // {kind, handle}, drained by poll
+        listeners: [],     // parallel to els: the binding's listener, or null for a handle an event only NAMED (a target)
+        events: [],        // {kind, handle, target, current}, drained by poll
         head: 0,
         imageFrom: '',     // kama_ui_web_set_image_rewrite: `<img src` ending in this ...
         imageTo: '',       // ... is rewritten to end in this, before the browser parses the markup
@@ -96,16 +98,122 @@ mergeInto(LibraryManager.library, {
             return c.width / cw;
         },
 
+        // The events a binding hears. ⚠️ ONE LIST, BECAUSE THE DETACH MUST NAME EVERY EVENT THE ATTACH DID: 0.1.0's
+        // `clearBindings` removed `click` alone, and left `change` and `input` on every control of every document the
+        // page had shown — a detached field still queueing events for a handle that now named something else.
+        heard: ['click', 'change', 'input'],
+
+        // A form control: what has a value and a checked state on BOTH legs (RmlUi's ElementFormControl). A browser
+        // gives `value` to more (an `<li>` has a numeric one), which natively has none.
+        control: function (el) {
+            return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+        },
+
+        // What a DOM event is to the seam: 1 a click, 2 a change, 0 nothing.
+        //
+        // ⚠️ **ONE CHANGE PER EDIT, AS RmlUi COUNTS THEM** (CHANGED in 0.2.0, which mapped both `input` and `change` to
+        // a change, so a checkbox, a radio or a `<select>` delivered two per edit here and one natively). A browser
+        // fires BOTH for most edits, so which one counts is chosen by the control:
+        //   - a text field, a textarea, a range: `input`, which fires on every edit. ⚠️ THIS IS WHAT MAKES A SLIDER
+        //     BEHAVE THE SAME ON BOTH LEGS. RmlUi's range fires its Change on every movement of the bar; a browser's
+        //     `change` fires only when the drag is RELEASED. Counting `change` would give a volume dial that previews
+        //     live natively and jumps at the end in a browser — a divergence a structural check cannot see and an ear
+        //     can. Their `change` is a commit (a release, a field losing focus, ENTER), and natively there is none.
+        //   - a checkbox, a radio, a `<select>`, anything else: `change`, once per toggle or choice. Their `input`
+        //     fires at the same moment, so counting both was the double.
+        kindOf: function (e) {
+            if (!e) return 0;
+            if (e.type === 'click') return 1;
+            var t = e.target;
+            var live = !!t && (t.tagName === 'TEXTAREA' ||
+                               (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'radio'));
+            return e.type === (live ? 'input' : 'change') ? 2 : 0;
+        },
+
+        // Give handle i + 1 a listener and put it on the element, once. ⚠️ NO stopPropagation (kama_ui_web_bind says
+        // why). It hears `click`, `input` and `change` (`heard`); `kindOf` decides what each is. The event keeps WHERE
+        // it happened (`target`) and who heard it (`current`); the poll walks between the two.
+        listen: function (i) {
+            if (!KamaUi.listeners[i]) {
+                var handle = i + 1;
+                KamaUi.listeners[i] = function (e) {
+                    var kind = KamaUi.kindOf(e);
+                    if (!kind) return;
+                    KamaUi.events.push({ kind: kind, handle: handle, target: e.target, current: e.currentTarget });
+                };
+            }
+            KamaUi.attach(i);
+        },
+
+        attach: function (i) {
+            var el = KamaUi.els[i], fn = KamaUi.listeners[i];
+            if (!el || !fn) return;
+            for (var k = 0; k < KamaUi.heard.length; k++) el.addEventListener(KamaUi.heard[k], fn);
+        },
+
+        // Let go of handle i + 1's element and take its listener off it. The handle keeps its id and its listener, so
+        // the next use that finds the id again (`el`) re-attaches — what @kama/rmlui's bindings do natively.
+        release: function (i) {
+            var el = KamaUi.els[i], fn = KamaUi.listeners[i];
+            if (el && fn) {
+                for (var k = 0; k < KamaUi.heard.length; k++) el.removeEventListener(KamaUi.heard[k], fn);
+            }
+            KamaUi.els[i] = null;
+        },
+
+        // The element a handle names NOW, or null. ⚠️ EVERY ENTRY POINT GOES THROUGH THIS, never `els[h - 1]` directly:
+        // a handle whose element a rewrite released (or the page detached some other way) is re-found by its id here —
+        // listeners and all — or answers null, so a stale handle is a no-op rather than a write into a node nobody
+        // sees. That is the native leg's binding, re-finding lazily on use, and it is why the two legs agree on what a
+        // handle names after a rewrite without either being told.
+        el: function (handle) {
+            if (!KamaUi.root || !(handle >= 1 && handle <= KamaUi.ids.length)) return null;
+            var i = handle - 1;
+            var el = KamaUi.els[i];
+            if (el && KamaUi.root.contains(el)) return el;
+            if (el) KamaUi.release(i);
+            var again = KamaUi.root.querySelector('#' + CSS.escape(KamaUi.ids[i]));
+            if (!again) return null;
+            KamaUi.els[i] = again;
+            KamaUi.attach(i);
+            return again;
+        },
+
+        // The handle for an id, minted WITHOUT a listener if nobody bound it — natively `Document.bind` with no `listen`.
+        // An event's target and `kama_ui_web_find` both come here. A later `kama_ui_web_bind` of the same id finds it
+        // and starts listening.
+        name: function (id, el) {
+            var at = KamaUi.ids.indexOf(id);
+            if (at >= 0) {
+                KamaUi.el(at + 1);
+                return at + 1;
+            }
+            KamaUi.els.push(el);
+            KamaUi.ids.push(id);
+            KamaUi.listeners.push(null);
+            return KamaUi.els.length;
+        },
+
+        // An event's target as a handle: the nearest element with an id from where it happened up to the element
+        // that heard it (inclusive). Walked at the POLL, not in the listener, because that is when the native leg
+        // walks it: a target a rewrite detached in between is 0 on both.
+        targetOf: function (ev) {
+            var n = ev.target;
+            if (n && n.nodeType !== 1) n = n.parentElement;
+            if (!n || !KamaUi.root || !KamaUi.root.contains(n)) return 0;
+            for (; n && n !== KamaUi.root; n = n.parentElement) {
+                if (n.id) return KamaUi.name(n.id, n);
+                if (n === ev.current) return 0;
+            }
+            return 0;
+        },
+
         // Drop every binding. Called when the document is replaced — the native shim detaches its
         // RmlUi listeners here too, and for a sharper reason: over there a listener outliving its
         // element is a use-after-free one frame later. Ours would merely leak, which is exactly why
         // it is worth doing deliberately rather than relying on the difference.
         clearBindings: function () {
-            for (var i = 0; i < KamaUi.els.length; i++) {
-                var el = KamaUi.els[i];
-                var fn = KamaUi.listeners[i];
-                if (el && fn) el.removeEventListener('click', fn);
-            }
+            for (var i = 0; i < KamaUi.els.length; i++) KamaUi.release(i);
             KamaUi.els = [];
             KamaUi.ids = [];
             KamaUi.listeners = [];
@@ -115,7 +223,7 @@ mergeInto(LibraryManager.library, {
     },
 
     kama_ui_web_init__deps: ['$KamaUi'],
-    kama_ui_web_init: function (width, height) {
+    kama_ui_web_init: function (width, height, page) {
         if (typeof document === 'undefined' || !document.body) return 0;
 
         KamaUi.stage = document.getElementById('ui-stage');
@@ -133,16 +241,39 @@ mergeInto(LibraryManager.library, {
             KamaUi.stage.appendChild(KamaUi.root);
         }
 
-        // The stage is the VIRTUAL resolution in CSS pixels and is scaled as a whole, which is what
-        // makes a document identical at every window size.
         var s = KamaUi.stage.style;
         s.position = 'fixed';
         s.left = '0';
         s.top = '0';
-        s.width = width + 'px';
-        s.height = height + 'px';
-        s.transformOrigin = '0 0';
-        s.display = 'none';
+        s.transform = '';
+        KamaUi.vt = '';
+        KamaUi.page = page !== 0;
+        if (KamaUi.page) {
+            // A PAGE: the stage is pinned to the window's four edges, so CSS sizes it and follows every resize with no
+            // call from the program, and it is shown now — there is no letterbox for `setViewport` to place. `auto`
+            // and `none` rather than '' so a shell's own stylesheet cannot put a fixed size or a scale back. The
+            // document scrolls in its own `overflow: auto` elements; the stage itself never does.
+            s.right = '0';
+            s.bottom = '0';
+            s.width = 'auto';
+            s.height = 'auto';
+            s.transform = 'none';
+            s.transformOrigin = '';
+            s.overflow = 'hidden';
+            s.display = 'block';
+            KamaUi.vv = 1;
+        } else {
+            // The stage is the VIRTUAL resolution in CSS pixels and is scaled as a whole, which is what
+            // makes a document identical at every window size.
+            s.right = 'auto';
+            s.bottom = 'auto';
+            s.width = width + 'px';
+            s.height = height + 'px';
+            s.transformOrigin = '0 0';
+            s.overflow = '';
+            s.display = 'none';
+            KamaUi.vv = 0;
+        }
         KamaUi.clearBindings();
         return 1;
     },
@@ -161,10 +292,17 @@ mergeInto(LibraryManager.library, {
         return 1;
     },
 
+    // ⚠️ THE BINDINGS INSIDE ARE RELEASED FIRST (host.kama): `innerHTML` detaches the old children but does not free
+    // them while something holds them, and a binding did — with three listeners still on — so a list rewritten every
+    // frame kept every row it had ever shown. The element itself keeps its binding.
     kama_ui_web_set_inner__deps: ['$KamaUi'],
     kama_ui_web_set_inner: function (handle, htmlPtr) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el) return;
+        for (var i = 0; i < KamaUi.els.length; i++) {
+            var b = KamaUi.els[i];
+            if (b && b !== el && el.contains(b)) KamaUi.release(i);
+        }
         el.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
     },
 
@@ -178,56 +316,33 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_bind: function (idPtr) {
         if (!KamaUi.root) return 0;
         var id = UTF8ToString(idPtr);
+        if (!id) return 0;   // natively too; and `querySelector('#')` throws
         var at = KamaUi.ids.indexOf(id);
         if (at >= 0) {
-            // Already bound. ⚠️ RE-RESOLVE IF THE ELEMENT HAS BEEN DETACHED BY A `set_inner`.
-            // Keeping the HANDLE stable is what matters to a caller (dispatch is a chain of `==`
-            // against integers), so re-pointing it changes nothing about the contract.
+            // Already bound (or named by an event's target). ⚠️ RE-RESOLVE IF A `set_inner` REPLACED THE ELEMENT —
+            // `el` does, with the same handle. Keeping the HANDLE stable is what matters to a caller (dispatch is a
+            // chain of `==` against integers), so re-pointing it changes nothing about the contract.
             //
             // ✅ **THE NATIVE LEG DOES THE SAME**, through @kama/rmlui's bindings, which track each element
             // with RmlUi's ObserverPtr. ⚠️ It could not use this leg's `contains` test on a raw pointer: a
             // destroyed element's memory is commonly reused by its replacement, so the pointers compare
             // equal — the earlier shims found that the hard way. A detached DOM node stays detached.
-            var old = KamaUi.els[at];
-            if (old && KamaUi.root.contains(old)) return at + 1;
-            var again = KamaUi.root.querySelector('#' + CSS.escape(id));
-            if (!again) return at + 1;
-            if (KamaUi.listeners[at]) {
-                again.addEventListener('click', KamaUi.listeners[at]);
-                again.addEventListener('change', KamaUi.listeners[at]);
-                again.addEventListener('input', KamaUi.listeners[at]);
-            }
-            KamaUi.els[at] = again;
+            KamaUi.el(at + 1);
+            KamaUi.listen(at);
             return at + 1;
         }
 
         var el = KamaUi.root.querySelector('#' + CSS.escape(id));
         if (!el) return 0;
 
-        var handle = KamaUi.els.length + 1;
         // ⚠️ NO stopPropagation. RmlUi bubbles, so natively a bound container receives its children's
         // clicks and one press on a button inside it delivers TWO events. Swallowing the bubble here
         // would make the two legs count differently, which is the kind of divergence nothing would catch.
-        //
-        // ⚠️ **`input` AS WELL AS `change`, AND THAT IS WHAT MAKES A SLIDER BEHAVE THE SAME ON BOTH
-        // LEGS.** RmlUi's range fires its Change event on every movement of the bar; a browser's
-        // `change` fires only when the drag is RELEASED, and `input` is the one that fires
-        // continuously. Listening to `change` alone would give a volume dial that previews live
-        // natively and jumps at the end in a browser — a divergence a structural check cannot see and
-        // an ear can. Both map to kind 2, so a release delivers two events, which is the same
-        // duplicate shape the bubbling container already produces.
-        var fn = function (e) {
-            var kind = (e && (e.type === 'change' || e.type === 'input')) ? 2 : 1;
-            KamaUi.events.push({ kind: kind, handle: handle });
-        };
-        el.addEventListener('click', fn);
-        el.addEventListener('change', fn);
-        el.addEventListener('input', fn);
-
         KamaUi.els.push(el);
         KamaUi.ids.push(id);
-        KamaUi.listeners.push(fn);
-        return handle;
+        KamaUi.listeners.push(null);
+        KamaUi.listen(KamaUi.els.length - 1);
+        return KamaUi.els.length;
     },
 
     // ---- moving the focus, because the browser never gets the chance ----------------------------
@@ -311,8 +426,8 @@ mergeInto(LibraryManager.library, {
             if (want > max) want = max;
             if (want !== now) {
                 active.value = String(want);
-                // `input`, not `change`: the seam listens for both and `input` is what a drag emits,
-                // so a keyed adjustment reaches the program by the identical path a dragged one does.
+                // `input`, not `change`: `input` is what a drag emits and what a range's change is counted from
+                // (`kindOf`), so a keyed adjustment reaches the program by the identical path a dragged one does.
                 active.dispatchEvent(new Event('input', { bubbles: true }));
             }
             return;
@@ -342,7 +457,9 @@ mergeInto(LibraryManager.library, {
     },
 
     kama_ui_web_poll_event__deps: ['$KamaUi'],
-    kama_ui_web_poll_event: function (handlePtr) {
+    kama_ui_web_poll_event: function (handlePtr, targetPtr) {
+        HEAP32[handlePtr >> 2] = 0;
+        HEAP32[targetPtr >> 2] = 0;
         if (KamaUi.head >= KamaUi.events.length) {
             // Drained: reset rather than letting the array grow for the life of the page. The native
             // shim does the same with its head index.
@@ -352,6 +469,7 @@ mergeInto(LibraryManager.library, {
         }
         var ev = KamaUi.events[KamaUi.head++];
         HEAP32[handlePtr >> 2] = ev.handle | 0;
+        HEAP32[targetPtr >> 2] = KamaUi.targetOf(ev) | 0;
         return ev.kind | 0;
     },
 
@@ -359,6 +477,13 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_set_viewport: function (offsetX, offsetY, scale, visible) {
         if (!KamaUi.stage) return;
         var on = visible ? 1 : 0;
+        // A PAGE has no letterbox to place: only `visible` means anything, memoised for the reason below.
+        if (KamaUi.page) {
+            if (KamaUi.vv === on) return;
+            KamaUi.vv = on;
+            KamaUi.stage.style.display = on ? 'block' : 'none';
+            return;
+        }
         // See $KamaUi.vt — writing an unchanged `display` would reset a document's scroll every frame.
         if (!on) {
             if (KamaUi.vv === 0) return;
@@ -398,7 +523,7 @@ mergeInto(LibraryManager.library, {
         HEAPF32[wPtr >> 2] = 0;
         HEAPF32[hPtr >> 2] = 0;
 
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el || !KamaUi.stage) return 0;
 
         // getBoundingClientRect is in CSS pixels (relative to the viewport) and already carries the
@@ -415,7 +540,7 @@ mergeInto(LibraryManager.library, {
 
     kama_ui_web_element_value__deps: ['$KamaUi'],
     kama_ui_web_element_value: function (handle) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el) return 0;
         // ⚠️ NaN IS THE REAL CASE HERE, not a defensive flourish: `value` is a STRING on every DOM
         // element, and a `<div>` bound by a caller has no `value` at all, so `parseFloat(undefined)`
@@ -428,14 +553,14 @@ mergeInto(LibraryManager.library, {
     // behaviour too: writing state INTO a control is not a person moving it.
     kama_ui_web_set_value__deps: ['$KamaUi'],
     kama_ui_web_set_value: function (handle, value) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el || !('value' in el)) return;
         el.value = String(value);
     },
 
     kama_ui_web_set_class__deps: ['$KamaUi'],
     kama_ui_web_set_class: function (handle, name, on) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el || !name) return;
         el.classList.toggle(UTF8ToString(name), on !== 0);
     },
@@ -445,22 +570,31 @@ mergeInto(LibraryManager.library, {
         KamaUi.clearBindings();
         if (KamaUi.root) KamaUi.root.innerHTML = '';
         if (KamaUi.stage) KamaUi.stage.style.display = 'none';
+        // What is on screen now, so a later `open` and `setViewport` write their transform rather than skip it.
+        KamaUi.vv = 0;
+        KamaUi.vt = '';
     },
 
     // ---- focus and text entry (kama_ui_web.h) -----------------------------------------------------------
 
     kama_ui_web_focus_element__deps: ['$KamaUi'],
     kama_ui_web_focus_element: function (handle) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el || typeof el.focus !== 'function') return 0;
         el.focus();
         return document.activeElement === el ? 1 : 0;
     },
 
     kama_ui_web_focused__deps: ['$KamaUi'],
+    // Through `el`, so a handle a rewrite released and whose id is back answers for the new element — as natively,
+    // where `bindingOf` resolves every binding of the document.
     kama_ui_web_focused: function () {
-        var i = KamaUi.els.indexOf(document.activeElement);
-        return i >= 0 ? i + 1 : 0;
+        var a = document.activeElement;
+        if (!a || !KamaUi.root || !KamaUi.root.contains(a)) return 0;
+        for (var i = 0; i < KamaUi.ids.length; i++) {
+            if (KamaUi.el(i + 1) === a) return i + 1;
+        }
+        return 0;
     },
 
     // A text control has the focus: the DOM is typing into it, so a printable key is not a screen verb.
@@ -474,12 +608,14 @@ mergeInto(LibraryManager.library, {
         return (t === 'text' || t === 'password') ? 1 : 0;
     },
 
-    // At most capacity - 1 bytes and a NUL, the FULL length returned (src/web.kama reads up to 512 bytes).
+    // At most capacity - 1 bytes and a NUL, and ALWAYS the full length: src/web.kama asks once with no buffer to learn
+    // it, then again with a buffer that size (CHANGED in 0.2.0; it read up to 512 bytes). A control's value only, as
+    // natively.
     kama_ui_web_element_text__deps: ['$KamaUi', '$stringToUTF8', '$lengthBytesUTF8'],
     kama_ui_web_element_text: function (handle, buf, capacity) {
         if (buf && capacity > 0) HEAPU8[buf] = 0;
-        var el = KamaUi.els[handle - 1];
-        if (!el || !('value' in el)) return 0;
+        var el = KamaUi.el(handle);
+        if (!KamaUi.control(el)) return 0;
         var s = String(el.value);
         if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
         return lengthBytesUTF8(s);
@@ -488,8 +624,8 @@ mergeInto(LibraryManager.library, {
     // Like `kama_ui_web_set_value`: writing state in fires no event, on this leg as natively.
     kama_ui_web_set_text__deps: ['$KamaUi'],
     kama_ui_web_set_text: function (handle, text) {
-        var el = KamaUi.els[handle - 1];
-        if (!el || !('value' in el) || !text) return;
+        var el = KamaUi.el(handle);
+        if (!KamaUi.control(el) || !text) return;
         el.value = UTF8ToString(text);
     },
 
@@ -497,7 +633,7 @@ mergeInto(LibraryManager.library, {
     // One inline style property, as the native shim's SetProperty ("" removes it).
     kama_ui_web_set_property__deps: ['$KamaUi'],
     kama_ui_web_set_property: function (handle, name, value) {
-        var el = KamaUi.els[handle - 1];
+        var el = KamaUi.el(handle);
         if (!el || !name) return 0;
         var v = value ? UTF8ToString(value) : '';
         if (v === '') { el.style.removeProperty(UTF8ToString(name)); return 1; }
@@ -513,5 +649,71 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_close_document: function () {
         KamaUi.clearBindings();
         if (KamaUi.root) KamaUi.root.innerHTML = '';
+    },
+
+    // ---- 0.2.0 (kama_ui_web.h) ------------------------------------------------------------------------------------------
+
+    // As `kama_ui_web_element_text`: the full length always, the bytes when there is room.
+    kama_ui_web_element_id__deps: ['$KamaUi', '$stringToUTF8', '$lengthBytesUTF8'],
+    kama_ui_web_element_id: function (handle, buf, capacity) {
+        if (buf && capacity > 0) HEAPU8[buf] = 0;
+        if (!KamaUi.root || !(handle >= 1 && handle <= KamaUi.ids.length)) return 0;
+        var s = KamaUi.ids[handle - 1];
+        if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
+        return lengthBytesUTF8(s);
+    },
+
+    // `findElement`: `kama_ui_web_bind` without the listener (`$KamaUi.name`).
+    kama_ui_web_find__deps: ['$KamaUi'],
+    kama_ui_web_find: function (idPtr) {
+        if (!KamaUi.root) return 0;
+        var id = UTF8ToString(idPtr);
+        if (!id) return 0;
+        if (KamaUi.ids.indexOf(id) < 0) {
+            var el = KamaUi.root.querySelector('#' + CSS.escape(id));
+            if (!el) return 0;
+            return KamaUi.name(id, el);
+        }
+        return KamaUi.name(id, null);
+    },
+
+    // ⚠️ TWO ATTRIBUTES ARE STATE NATIVELY AND ONLY A DEFAULT HERE. RmlUi keeps a checkbox's state in `checked` and a
+    // control's in `value`; a browser reads either attribute only until a person touches the control (its "dirty"
+    // flag), after which writing the attribute changes nothing on screen. So both also write the property — quietly,
+    // as every write is. An `<img src>` gets the image rewrite, as markup does, before the browser fetches it.
+    kama_ui_web_set_attribute__deps: ['$KamaUi'],
+    kama_ui_web_set_attribute: function (handle, name, value) {
+        var el = KamaUi.el(handle);
+        if (!el || !name) return;
+        var n = UTF8ToString(name);
+        var v = value ? UTF8ToString(value) : '';
+        if (n.toLowerCase() === 'src' && KamaUi.imageFrom && KamaUi.imageTo &&
+            v.slice(-KamaUi.imageFrom.length) === KamaUi.imageFrom) {
+            v = v.slice(0, v.length - KamaUi.imageFrom.length) + KamaUi.imageTo;
+        }
+        try { el.setAttribute(n, v); } catch (e) { return; }   // a name the DOM refuses ("", a space) does nothing
+        if (KamaUi.control(el)) {
+            if (n === 'checked') el.checked = true;
+            if (n === 'value') el.value = v;
+        }
+    },
+
+    kama_ui_web_remove_attribute__deps: ['$KamaUi'],
+    kama_ui_web_remove_attribute: function (handle, name) {
+        var el = KamaUi.el(handle);
+        if (!el || !name) return;
+        var n = UTF8ToString(name);
+        el.removeAttribute(n);
+        if (KamaUi.control(el)) {
+            if (n === 'checked') el.checked = false;
+            if (n === 'value') el.value = '';
+        }
+    },
+
+    // `.checked`, which is the box's live state (the attribute is only its default). An `<input>` only, as natively.
+    kama_ui_web_element_checked__deps: ['$KamaUi'],
+    kama_ui_web_element_checked: function (handle) {
+        var el = KamaUi.el(handle);
+        return (el && el.tagName === 'INPUT' && el.checked === true) ? 1 : 0;
     }
 });

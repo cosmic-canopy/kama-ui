@@ -3,7 +3,7 @@
 // on both; the seam suite runs the same checks against whichever `UiContext` this build has. A failing case prints its
 // name; the last line counts them.
 
-import { Tally, uidocTests, navTests, seamTests, report };
+import { Tally, uidocTests, navTests, seamTests, pageTests, report };
 
 fn int32 main()
 {
@@ -11,5 +11,6 @@ fn int32 main()
     uidocTests(t: t);
     navTests(t: t);
     seamTests(t: t);
+    pageTests(t: t);
     return report(t: t);
 }

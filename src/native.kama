@@ -5,7 +5,8 @@ file @compileFor(!ARCH_WASM32);
 // POLICY on top of it, which the shim used to carry in C++:
 //   - one RmlUi context per UiContext, one document at a time, shown with its `autofocus` element focused;
 //   - `bindElement` is a @kama/rmlui BINDING listening for click and change — the same handle for the same id while the
-//     document lives, re-finding its element (and moving its listeners) after a rewrite;
+//     document lives, re-finding its element (and moving its listeners) after a rewrite; an event's target is the
+//     binding of the nearest element with an id, named at the poll without listening;
 //   - the keyboard is the GLFW-numbered subset in types.kama, translated here to RmlUi's own keys, with "a navigation key
 //     with nothing focused lands on the first tab element";
 //   - `update` steps the clock 1/60 s; writes into controls are quiet.
@@ -81,6 +82,23 @@ type value UiContext implements UiHost {
         this.lib = RmlUi.none();
         this.ctx = Context.fromHandle(handle: 0);
         this.doc = Document.fromHandle(handle: 0);
+        this.start(width: width, height: height, fontPath: fontPath);
+    }
+
+    // ADDED (0.2.0): a PAGE (host.kama). Natively it starts exactly as `open` does — `width` x `height` is the window's
+    // framebuffer — because RmlUi lays a document out in whatever box it is given; what differs is the program's half:
+    // `setSize` on every window resize, and the commands drawn at the window's origin with no letterbox.
+    public unsafe ctor openPage(int32 width, int32 height, const ref string fontPath)
+    {
+        this.ready = 0;
+        this.lib = RmlUi.none();
+        this.ctx = Context.fromHandle(handle: 0);
+        this.doc = Document.fromHandle(handle: 0);
+        this.start(width: width, height: height, fontPath: fontPath);
+    }
+
+    unsafe fn void start(int32 width, int32 height, const ref string fontPath)
+    {
         Result<RmlUi, RmlUiError> started = RmlUi.start();
         match (started) {
             case Err(error: e): { }
@@ -161,6 +179,10 @@ type value UiContext implements UiHost {
         return b.element();
     }
 
+    // ⚠️ THE RELEASE host.kama promises is @kama/rmlui's, and nothing here has to do it: RmlUi destroys the old children,
+    // their listeners retire themselves as they go, and a binding tracks its element through an observer — so a handle
+    // into what was replaced reads as dead (every call a no-op) rather than reaching freed memory, until its id is
+    // found again. The suite proves it under AddressSanitizer.
     public unsafe fn void setInnerRml(int32 handle, const ref string rml)
     {
         Optional<Element> e = this.bound(handle: handle);
@@ -322,6 +344,24 @@ type value UiContext implements UiHost {
         };
     }
 
+    // A binding with no `listen`: @kama/rmlui's bindings carry only the listeners asked of them.
+    public unsafe fn int32 findElement(const ref string elementId)
+    {
+        if (this.ready == 0) { return 0; }
+        Optional<Binding> b = this.doc.bind(id: elementId);
+        return match (b) { case None: 0; case Some(value: x): x.handle(); };
+    }
+
+    // Touched first: a binding whose document has gone is forgotten on its first use, so its id then reads "" — as on
+    // the web, where a new document drops every binding at once.
+    public unsafe fn string elementId(int32 handle)
+    {
+        if (this.ready == 0 || handle == 0) { return ""; }
+        Binding b = Binding.fromHandle(handle: handle);
+        Optional<Element> touched = b.element();
+        return b.id();
+    }
+
     public unsafe fn UiRect elementRect(int32 handle)
     {
         Optional<Element> e = this.bound(handle: handle);
@@ -365,6 +405,47 @@ type value UiContext implements UiHost {
         return match (e) { case Some(value: el): el.setProperty(name: name, value: value); case None: false; };
     }
 
+    // ⚠️ `value` GOES THROUGH THE QUIET WRITE: on a control it is the state `setElementText` writes, and RmlUi raises a
+    // change for it (a range always, a text field when it sanitizes). `checked` cannot be made quiet from here — see
+    // host.kama.
+    public unsafe fn void setElementAttribute(int32 handle, const ref string name, const ref string value)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) {
+            case None: { }
+            case Some(value: el): {
+                if (name == "value" && el.setValue(value: value, quiet: true)) { return; }
+                el.setAttribute(name: name, value: value);
+            }
+        };
+    }
+
+    // A control's `value` is emptied quietly rather than removed, so it reads back "" on both legs.
+    public unsafe fn void removeElementAttribute(int32 handle, const ref string name)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) {
+            case None: { }
+            case Some(value: el): {
+                string none = "";
+                if (name == "value" && el.setValue(value: none, quiet: true)) { return; }
+                el.removeAttribute(name: name);
+            }
+        };
+    }
+
+    // RmlUi keeps a checkbox's state in its `checked` attribute and nowhere else. Only an `<input>` answers, as only one
+    // has `.checked` on the web.
+    public unsafe fn bool elementChecked(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        Element el = Element.fromHandle(handle: 0);
+        match (e) { case None: { return false; } case Some(value: x): { el = x; } };
+        if (el.tag() != "input") { return false; }
+        Optional<string> c = el.attribute(name: "checked");
+        return match (c) { case None: false; case Some(value: s): true; };
+    }
+
     public unsafe fn string elementText(int32 handle)
     {
         Optional<Element> e = this.bound(handle: handle);
@@ -390,13 +471,51 @@ type value UiContext implements UiHost {
                     if (!ev.binding.isNone()) {
                         bool click = match (ev.type) { case Click: true; case _: false; };
                         bool change = match (ev.type) { case Change: true; case _: false; };
-                        if (click) { return Optional::Some(value: UiEvent.make(kind: UiEventKind::Click, element: ev.binding.handle())); }
-                        if (change) { return Optional::Some(value: UiEvent.make(kind: UiEventKind::Change, element: ev.binding.handle())); }
+                        if (change && this.notAnEdit(ev: ev)) { change = false; }
+                        if (click || change) {
+                            UiEventKind kind = UiEventKind::Change;
+                            if (click) { kind = UiEventKind::Click; }
+                            int32 target = this.targetOf(ev: ev);
+                            return Optional::Some(value: UiEvent.make(kind: kind, element: ev.binding.handle(), target: target));
+                        }
                     }
                 }
             };
         }
         return Optional::None;
+    }
+
+    // ⚠️ ONE CHANGE PER EDIT (host.kama), the count the web leg gets by hearing `input` from a text field, a textarea and
+    // a range and `change` from everything else. RmlUi raises two Changes that are no person's edit: ENTER in a text
+    // field (`linebreak` — a commit, which the web counts as nothing either) and the radio a choice UNCHECKS (its
+    // neighbour's side effect; a browser raises nothing on it). Read from the event's own parameters, which are this
+    // poll's until the next.
+    unsafe fn bool notAnEdit(Event ev)
+    {
+        string linebreak = "linebreak";
+        if (this.lib.eventInt(name: linebreak, fallback: 0) != 0) { return true; }
+        string checkedName = "checked";
+        if (this.lib.eventInt(name: checkedName, fallback: 1) != 0) { return false; }
+        if (ev.target.tag() != "input") { return false; }
+        Optional<string> kind = ev.target.attribute(name: "type");
+        return match (kind) { case None: false; case Some(value: s): s == "radio"; };
+    }
+
+    // The nearest element WITH AN ID from where the event happened up to the element that heard it (inclusive), as the
+    // binding for that id — the handle `bindElement` returns, named here as `findElement` names it. The walk happens at
+    // the poll, over handles that read as dead once their element is gone, so a target a rewrite destroyed is 0 (the
+    // web leg makes the same check at the same moment).
+    unsafe fn int32 targetOf(Event ev)
+    {
+        Element at = ev.target;
+        while (at.isLive()) {
+            string id = at.id();
+            if (!id.isEmpty()) { return this.findElement(elementId: id); }
+            if (at.same(other: ev.element)) { return 0; }
+            Optional<Element> up = at.parent();
+            match (up) { case None: { return 0; } case Some(value: p): { at = p; } };
+        }
+        return 0;
     }
 
     public unsafe fn void typeChar(int32 codepoint)

@@ -1,7 +1,16 @@
 // ui::host — the contract both UI backends satisfy.
 //
 // Three additions are marked below (`loadDocumentText`, `setImageRewrite`, and `provideImage` taking a view rather than
-// a raw pointer).
+// a raw pointer). 0.2.0's are marked with their version: `elementId`, `setElementAttribute`, `removeElementAttribute`,
+// `elementChecked`, `findElement`, an event's `target`, one change per edit, `setInnerRml` releasing what it replaces,
+// and `elementText` with no cap.
+//
+// TWO WAYS TO OPEN, ONE CONTRACT. `UiContext.open(width, height, fontPath)` is a STAGE: a fixed virtual resolution the
+// program letterboxes and scales (a game's menus). `UiContext.openPage(width, height, fontPath)` (0.2.0) is a PAGE: the
+// document fills the window and reflows with it, as a web page does (a tool, an editor). On the web a page's stage is
+// the window itself — shown without `setViewport`, never scaled, resized by CSS alone, and an element with
+// `overflow: auto` scrolls; natively the program passes its window's size to `setSize` on every resize and draws the
+// commands at the window's origin, unscaled. Every method below means the same in both.
 //
 // ONE SET OF DOCUMENTS, TWO BACKENDS. `UiContext` is declared twice — in native.kama over @kama/rmlui and in web.kama
 // over the browser's own DOM — under complementary `@compileFor` gates, so exactly one survives per build and a caller
@@ -44,6 +53,12 @@ type contract UiHost for value {
     // backends repair a re-bind (the same handle comes back, naming the new element), and a handle bound to the
     // container itself is untouched. ⚠️ IT IS A PARSER on both legs (RmlUi's, and `innerHTML`): text another person typed
     // goes through `ui::uidoc::escapeText` first — on the web an unescaped `<` is script injection, not a mangled screen.
+    //
+    // CHANGED (0.2.0): IT RELEASES THE BINDINGS TO WHAT IT REPLACES, on both legs. Every handle naming an element inside
+    // lets go of it and of its listeners — so a list rewritten every frame leaks nothing — and is STALE: every call on
+    // it is a no-op (false, 0, "", an empty rect), never a crash, until an element carries its id again. Its first use
+    // after that (`bindElement`, or any call) names the new element with the same handle and listens there again. A
+    // handle keeps its id (`elementId`) while the document lives.
     fn void setInnerRml(int32 handle, const ref string rml);
 
     // Hand over the pixels for one `<img>` a document will ask for. PIXELS, NOT A PATH: the backend decodes no image
@@ -62,13 +77,15 @@ type contract UiHost for value {
     fn void setImageRewrite(const ref string nativeExt, const ref string webExt);
 
     // Size in FRAMEBUFFER PIXELS, never logical points (on a Retina display or a browser with devicePixelRatio > 1 the
-    // two differ). The web leg sizes its stage once, at `open`; this is a no-op there.
+    // two differ). The web leg sizes its stage once, at `open`; this is a no-op there. A PAGE (`openPage`) calls it
+    // natively on every window resize, with the window's size; on the web CSS follows the window and this stays a no-op.
     fn void setSize(int32 width, int32 height);
 
     // Where the document sits on screen, and whether it is on screen at all: a letterbox offset and scale in
     // framebuffer pixels. ⚠️ `visible` IS WHAT THE WEB HALF NEEDS: natively a screen goes away because nobody draws its
     // commands, but a backend that OWNS elements has no such signal. A no-op natively (the renderer applies the same
-    // offsets to the recorded geometry).
+    // offsets to the recorded geometry). A PAGE is shown from the start and is never moved or scaled: there only
+    // `visible` means anything (false hides it, true shows it again).
     fn void setViewport(float32 offsetX, float32 offsetY, float32 scale, bool visible);
 
     // Advance layout and animations, then rebuild the command list. Once per frame, in this order. `update` steps the
@@ -127,6 +144,17 @@ type contract UiHost for value {
     // element — while the document lives.
     fn int32 bindElement(const ref string elementId);
 
+    // ADDED (0.2.0): name an element WITHOUT LISTENING to it. The same handle `bindElement` gives for the id (and an
+    // event's `target` names), and every other method takes it, but nothing is ever queued for it — so a container
+    // found this way does not hear its children either. For what a program only writes into or reads: a list it
+    // rewrites with `setInnerRml`, a row it sets a class or an attribute on, a box it measures. 0 when no element has
+    // that id. A handle already bound keeps listening, and `bindElement` on a found one starts it.
+    fn int32 findElement(const ref string elementId);
+
+    // ADDED (0.2.0): the id a handle names — one `bindElement` returned, or an event's `target`. "" for 0, an unknown
+    // handle, or one from a document that has gone. What turns a row's handle back into the row.
+    fn string elementId(int32 handle);
+
     // Where a bound element ended up after layout, in framebuffer pixels.
     fn UiRect elementRect(int32 handle);
 
@@ -143,15 +171,39 @@ type contract UiHost for value {
     // the backend took it.
     fn bool setElementProperty(int32 handle, const ref string name, const ref string value);
 
+    // ADDED (0.2.0): set or remove one attribute — `src`, `disabled`, `hidden`, `checked`, a `data-*` a rule selects
+    // on. In place, like a class. Two attributes are a control's STATE, and they write it on both legs: `checked` (a
+    // browser's attribute is only the default once a person has toggled the box, so the web leg sets `.checked` too)
+    // and `value` (written as `setElementText` writes it, quietly). On the web an `<img src>` gets `setImageRewrite`'s
+    // extension, as markup does. ⚠️ NATIVELY, WRITING `checked` ON A CHECKBOX OR RADIO RAISES A CHANGE EVENT: RmlUi
+    // dispatches one from the attribute itself and @kama/rmlui 0.1.0 has no quiet attribute write. A browser raises
+    // none. ⚠️ `hidden` hides nothing by itself natively (RmlUi has no default stylesheet): the document says
+    // `[hidden] { display: none; }`, which both legs then honour.
+    fn void setElementAttribute(int32 handle, const ref string name, const ref string value);
+    fn void removeElementAttribute(int32 handle, const ref string name);
+
+    // ADDED (0.2.0): is a bound checkbox or radio checked? False for anything else, and for an unknown handle.
+    fn bool elementChecked(int32 handle);
+
     // A bound text control's value, and setting it. ⚠️ NO CHANGE EVENT EITHER WAY, ON BOTH LEGS (nor for
     // `setElementValue`): a program writing state into a control is not a person editing it, and only a person's edit
     // reaches `pollEvent`. (RmlUi raises one for a range; the native leg drops it. A browser raises none.)
+    // "" for anything that is not an `<input>`, `<textarea>` or `<select>`. CHANGED (0.2.0): no length cap on the web
+    // (it was 511 bytes there); the whole value comes back on both legs.
     fn string elementText(int32 handle);
     fn void setElementText(int32 handle, const ref string text);
 
     // Pop one event, or None when the queue is drained. POLLED, never pushed: drain it once per frame, as input is.
-    // Clicks and changes on bound elements. ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
-    // press can be two events (the button's, then the container's) — on both legs.
+    // Clicks and changes on bound elements. CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
+    // every kind of control — each character typed into a text field or a textarea, each step of a range (live, as a
+    // slider previews), each toggle of a checkbox, each choice of a radio or an option. A commit is no edit: ENTER in a
+    // text field, a field losing focus, a slider let go, and the radio a choice unchecks raise none. ⚠️ ONE RESIDUE,
+    // NATIVELY: RmlUi forces a change for every movement of a range's bar, so a step past either end, or a drag that
+    // stays within one step, raises a change that changes nothing (@kama/rmlui 0.1.0 cannot tell it apart). A browser
+    // raises none. ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
+    // press can be two events (the button's, then the container's) — on both legs. Each names its `target` (0.2.0):
+    // the nearest element with an id where it happened, so one binding on a container is enough to tell its rows
+    // apart. ⚠️ POLL BEFORE YOU REWRITE: a target a `setInnerRml` destroyed in between reads as 0.
     fn Optional<UiEvent> pollEvent();
 
     // ---- focus and text entry ----

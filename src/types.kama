@@ -38,12 +38,22 @@ type enum UiEventKind { None, Click, Change }
 
 type value UiEvent {
     public UiEventKind kind;
-    public int32 element;      // the handle `bindElement` returned
+    public int32 element;      // the handle `bindElement` returned: the bound element that heard it
+    // ADDED (0.2.0): where it HAPPENED — the nearest element that has an id, walking up from the element the person hit
+    // to the bound one (inclusive). So ONE binding on a list says which row or which button inside it was pressed.
+    // It is the SAME handle `bindElement` gives for that id (the backend names it on the way out, without listening on
+    // it): a button bound elsewhere still compares with `==`, and `UiHost.elementId` gives the id's text for a row
+    // nobody bound. 0 when the target was destroyed (a `setInnerRml`) between the event and the poll.
+    // ⚠️ A HANDLE, NOT THE ID'S TEXT: a `value` owns nothing and a `string` is owned, so carrying the text would make
+    // every event a `resource` — no more copies out of a match arm, no more `Optional<UiEvent>` passed around freely.
+    public int32 target;
 
-    public ctor make(UiEventKind kind, int32 element)
+    // CHANGED (0.2.0): takes the target.
+    public ctor make(UiEventKind kind, int32 element, int32 target)
     {
         this.kind = kind;
         this.element = element;
+        this.target = target;
     }
 }
 

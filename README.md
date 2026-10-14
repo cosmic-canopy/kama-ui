@@ -4,7 +4,7 @@ One set of HTML-like documents for a [kama](https://kama-lang.org) program's UI.
 contract**:
 
 - **In a browser, the browser's own DOM.** The documents become real elements over the canvas, painted by the
-  browser. No JavaScript library is used: only the DOM and CSS, through about 500 lines of emcc `--js-library` glue.
+  browser. No JavaScript library is used: only the DOM and CSS, through about 700 lines of emcc `--js-library` glue.
 - **Natively, RmlUi** through [`@kama/rmlui`](https://github.com/cosmic-canopy/kama-rmlui). It records draw commands for the program's own renderer.
 
 The program writes `ui::UiContext` and never knows which backend it has. Each build has exactly one: `native.kama` and
@@ -18,11 +18,11 @@ contract where they are written.
 same contract. Only `native.kama` changes. The documents, the web leg and every program using `UiContext` stay as they
 are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 
-- documents from a file and from text;
-- bindings by id that survive rewrites;
-- clicks and changes, polled;
+- documents from a file and from text, on a scaled stage or as a page that fills the window;
+- bindings by id that survive rewrites, and let go of what a rewrite replaced;
+- clicks and changes, polled, each naming where it happened;
 - a focus ring driven by TAB, the arrows and ENTER;
-- quiet writes into controls, classes and inline properties;
+- quiet writes into controls, classes, attributes and inline properties;
 - recorded draw commands and textures.
 
 ## The contract
@@ -31,15 +31,15 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 
 | group | methods |
 |---|---|
-| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` |
+| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` (releases what it replaces) |
 | assets | `loadFont(path, fallback)`, `provideImage(name, rgba: ConstView<uint8>, w, h)`, `setImageRewrite(nativeExt, webExt)` |
 | frame | `setSize`, `setViewport(offsetX, offsetY, scale, visible)`, `setDpRatio`, `update()`, `updateAt(seconds)`, `render()` |
 | drawing (native) | `commandCount`, `command(i)` → `UiCommand` (`kind`, vertices, indices, texture, translation, scissor, transform), `textureCount`, `texture(h)`, `textureGeneration(h)` |
 | pointer (native) | `mouseMove`, `mouseButton`, `mouseWheel` |
 | keyboard | `key(code, down, shift)` with `UI_KEY_*` (GLFW's numbers), `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
-| elements | `bindElement(id)` → handle, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText`, `setElementClass`, `setElementProperty` |
-| events | `pollEvent()` → `UiEvent { kind: Click \| Change, element: handle }` |
-| lifetime | `UiContext.open(width, height, fontPath)`, `isOpen()`, `close()` |
+| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)` |
+| events | `pollEvent()` → `UiEvent { kind: Click \| Change, element: handle, target: handle }` |
+| lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
 `ui::UiNav` turns a pad's d-pad and stick into arrow presses (hysteresis, one direction at a time, delay then repeat).
 `ui::uidoc` holds the RML → HTML rewriter (`rmlToHtml`) and `escapeText`, the escaping both parsers agree on.
@@ -48,10 +48,30 @@ The rules that matter most:
 
 - **A `UiContext` is a value.** Its state lives on the other side of the seam, so a program may keep copies in module
   statics; `close()` is explicit.
+- **A stage or a page.** `open` is a fixed virtual resolution the program letterboxes and scales (`setViewport`): a
+  game's menus. `openPage` is a document that fills the window and reflows like a web page: a tool, an editor. On the
+  web a page's stage is pinned to the window, shown at once, never scaled, and resized by CSS alone; natively the
+  program passes its window's size to `setSize` on every resize and draws the commands at the origin, unscaled. Both
+  scroll an `overflow: auto` element in place.
 - **Handles are integers.** Binding an id again gives the same handle, and repairs it after `setInnerRml` replaced the
   element. Re-bind what you wrote, after the write.
+- **A rewrite releases what it replaced.** A handle into the old content lets go of its element and its listeners, and
+  every call on it is a no-op until an element carries its id again; then the same handle names the new one.
 - **Events bubble on both legs.** A bound container also hears its children's clicks.
-- **Writes into controls raise no event on either leg.** Only a person's edit is queued.
+- **An event names its target**: the nearest element with an id, from where it happened up to the bound element. One
+  binding on a list tells its rows apart. The target is a handle (the one `bindElement` gives for that id), so
+  `elementId` turns it into the row's id. Poll before you rewrite: a target the rewrite destroyed reads as 0.
+- **Name what you only write to with `findElement`.** It gives the handle `bindElement` would, without listening: a
+  list rewritten with `setInnerRml`, a row given a class, a box measured. Nothing is queued for it, and it does not
+  hear its children.
+- **One change per edit, the same count on both legs**: each character typed into a text field or a textarea, each
+  step of a range (live, as a slider previews), each toggle of a checkbox, each choice of a radio or an option. A
+  commit is no edit: ENTER in a text field, a field losing focus, a slider let go, and the radio a choice unchecks.
+  ⚠️ Natively RmlUi also forces a change for a range step past either end, or a drag within one step, that changes
+  nothing. A browser raises none.
+- **Writes into controls raise no event on either leg.** Only a person's edit is queued. ⚠️ One exception, natively:
+  writing `checked` on a checkbox or radio raises RmlUi's change, because `@kama/rmlui` 0.1.0 has no quiet attribute
+  write. A browser raises none.
 - **The program gets every key first** and forwards the subset: TAB, the arrows, ENTER, and the four editing keys.
   ENTER clicks the focused element, so it arrives as an ordinary click.
 - **The native renderer must apply `UiCommand`s in order and skip** (or implement) **every one whose `kind` is not
@@ -66,7 +86,7 @@ nothing to fetch or build first, and no `-L` path to set. Once the packages are 
 alone:
 
 ```json
-"dependencies": { "@kama/ui": { "version": "^0.1.0" } }
+"dependencies": { "@kama/ui": { "version": "^0.2.0" } }
 ```
 
 `@kama/rmlui` and `@kama/freetype` come with it. To build against a checkout instead (working on the package itself),
@@ -112,12 +132,33 @@ fn void open() {
 }
 ```
 
+A page — a tool's window, say — opens with `openPage`, follows the window with `setSize`, and needs one binding for a
+whole list:
+
+```kama
+fn void openTool(int32 width, int32 height) {
+    UiContext ui = UiContext.openPage(width: width, height: height, fontPath: "assets/fonts/Inter-Regular.ttf");
+    ui.loadDocument(path: "assets/ui/items.rml");   // <div id="items"><div id="item-17">…</div>…</div>
+    int32 items = ui.bindElement(elementId: "items");
+    // every window resize: ui.setSize(width: w, height: h);  (a no-op on the web, where CSS follows the window)
+    Optional<UiEvent> e = ui.pollEvent();
+    match (e) {
+        case None: { }
+        case Some(value: ev): {
+            if (ev.element == items) { string row = ui.elementId(handle: ev.target); /* "item-17" */ }
+        }
+    };
+}
+```
+
 ### In a browser
 
 Build the program with `--target WASM`. This package's `jsLibraries` and `emSettings` reach the build on their own.
 
 - **The page**: the shell may provide `#ui-stage` and `#ui-root`; if it does not, `open` creates them. The stage is
   the virtual resolution given to `open`. `setViewport(…, visible: true)` positions it over `#canvas` and shows it.
+  `openPage` pins the stage to the window's four edges instead: it is shown at once, never scaled, and CSS resizes
+  it; `setViewport` then only shows and hides it.
 - **Documents** are read from the program's virtual filesystem (`--embed-file` them) and rewritten to HTML by
   `ui::uidoc::rmlToHtml`. `loadDocumentText` needs no file.
 - **Fonts** come from the page's own `@font-face`. **Images** are served beside the page. If native and web read
@@ -166,23 +207,46 @@ The two scripts build one program, `tests/`. Shared on both legs:
   - laid-out boxes;
   - the focus ring starting on `autofocus`, walked down and up with wrapping, and TAB;
   - ENTER clicking the focused button, with the bubble to its container;
-  - **a real click, injected, arriving as a polled event**, bubbling to the container;
+  - **a real click, injected, arriving as a polled event**, bubbling to the container, each naming its target;
   - quiet writes of text and of a range, read back, raising nothing;
   - a class and an inline `dp` property changing a box;
   - a rewrite with a new id bound and an old handle kept;
+  - a rewrite releasing what it replaced: every call on a stale handle a no-op (under ASan natively), its id kept, and
+    the same handle naming the element once its id is back;
+  - one binding on a list: a click on each row naming the row (or the row's text, by its own id), a target being the
+    handle `bindElement` gives, and naming one adding no listener;
+  - `findElement`: a found element's click raising nothing, a found container not hearing its children, a found handle
+    taking a write and a rewrite, and binding it later giving the same handle, which then hears;
+  - **one change per edit, counted per control**: three characters typed into a text field, two into a textarea, a
+    range step, a checkbox toggle, a radio choice (one, though RmlUi also unchecks the neighbour), an option picked,
+    and ENTER in a text field (none);
+  - attributes: `hidden` against the document's `[hidden]` rule, `checked` set and removed, a person's click toggling
+    it, a write after that still taking, and a `value` attribute written quietly;
+  - a 3,400-byte value with three-byte characters read back whole;
   - closing the document;
-  - `close()`.
+  - `close()`;
+  - **a page** (`openPage`): shown without `setViewport` at the window's corner, and an `overflow: auto` box scrolled by
+    the wheel while the page stays put;
+  - a stage opened after the page, shown by `setViewport` at its own virtual width.
 
 On the native leg the click is RmlUi's own input: pointer, button down and up, update. On the web it is the browser's
-own hit test (`document.elementFromPoint`) and a bubbling `MouseEvent`. Each leg adds its own checks:
+own hit test (`document.elementFromPoint`) and a bubbling `MouseEvent`. Typing and picking an option are real input
+natively (`typeChar`, a click that opens the select and one on the option); on the web, where a synthetic key types
+nothing, the helper fires what the browser would (an `input` per character and the `change` of letting go; the option
+selected, then `input` and `change`). Each leg adds its own checks:
 
 - **Natively**: draws with vertices and a glyph-atlas texture, the provided picture at its own size, typing with
-  Backspace, Home and Delete, change events from typing, and "a navigation key with nothing focused lands on the first
-  control".
-- **On the web**: no commands and no textures, the image rewrite done before the browser fetched, and real elements.
+  Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
+  control", a `checked` write's change event (pinned: the one known difference), and a page reflowing to `setSize`.
+  The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
+- **On the web**: a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
+  attribute), real elements, a `checked` write raising nothing, a row a rewrite released and a field from a closed
+  document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
+  window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,
+  applied to the box under the point (a synthetic `WheelEvent` scrolls nothing).
 
-Results: **native 105 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 96 checks**, passing in headless
+Results: **native 161 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 161 checks**, passing in headless
 Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
 published.
 

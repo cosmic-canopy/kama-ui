@@ -2,23 +2,25 @@
 // in a browser (through the DOM). One document (tests/fixtures/seam.rml), loaded from a file and from text; an event
 // round trip from a real injected click; the focus ring walked by keys; controls written and read back; a rewrite
 // re-bound; the document closed. Where the legs legitimately differ (commands, typing, the browser's own focus model),
-// the check lives in leg_native.kama or leg_web.kama instead.
+// the check lives in leg_native.kama or leg_web.kama instead. Then a page (`openPage`), in `pageTests`.
 
 import {
-    Tally, check, section, injectClick, fontPath, legTests,
+    Tally, check, section, injectClick, injectScroll, typeInto, pick, fontPath, legTests, pageLegTests,
     ui::UiContext, ui::UiEvent, ui::UiEventKind, ui::UiRect,
-    ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP,
+    ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP, ui::UI_KEY_RIGHT,
     ui::uidoc::escapeText,
 };
-export { seamTests, Seen, collect, press, centerX, centerY };
+export { seamTests, pageTests, Seen, collect, changesOn, press, centerX, centerY };
 
-// What the queue held: how many events, how many clicks and changes, and the handles of the first two.
+// What the queue held: how many events, how many clicks and changes, and the handles and targets of the first two.
 type value Seen {
     public int32 count;
     public int32 clicks;
     public int32 changes;
     public int32 first;
     public int32 second;
+    public int32 firstTarget;
+    public int32 secondTarget;
 
     public ctor none()
     {
@@ -27,6 +29,8 @@ type value Seen {
         this.changes = 0;
         this.first = 0;
         this.second = 0;
+        this.firstTarget = 0;
+        this.secondTarget = 0;
     }
 }
 
@@ -44,12 +48,30 @@ fn Seen collect(ref UiContext ui)
                 bool change = match (ev.kind) { case Change: true; case _: false; };
                 if (click) { s.clicks = s.clicks + 1; }
                 if (change) { s.changes = s.changes + 1; }
-                if (s.count == 1) { s.first = ev.element; }
-                if (s.count == 2) { s.second = ev.element; }
+                if (s.count == 1) { s.first = ev.element; s.firstTarget = ev.target; }
+                if (s.count == 2) { s.second = ev.element; s.secondTarget = ev.target; }
             }
         };
     }
     return s;
+}
+
+// Drain the queue, counting the changes one handle heard (a bound container would hear them too, as a second count).
+fn int32 changesOn(ref UiContext ui, int32 handle)
+{
+    int32 n = 0;
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool change = match (ev.kind) { case Change: true; case _: false; };
+                if (change && ev.element == handle) { n = n + 1; }
+            }
+        };
+    }
+    return n;
 }
 
 fn void press(ref UiContext ui, int32 key)
@@ -71,6 +93,39 @@ fn string seamText()
     </style></head><body>
         <div id='box'><button id='only' autofocus>Only</button></div>
     </body></rml>";
+}
+
+// A page: a bar over a log that scrolls in its own box, the whole filling the window.
+fn string pageText()
+{
+    return "<rml><head><title>Page</title><style>
+        body { font-family: LatoLatin; font-size: 16dp; color: #ffffff; width: 100%; height: 100%; }
+        div, p { display: block; }
+        #page { width: 100%; height: 100%; }
+        #bar { height: 40dp; }
+        #log { height: 120dp; overflow: auto; }
+        #log p { height: 30dp; }
+        scrollbarvertical { width: 8dp; }
+        scrollbarvertical sliderbar { min-height: 10dp; background-color: #808080ff; }
+    </style></head><body>
+        <div id='page'><div id='bar'>Tools</div><div id='log'>
+            <p id='line1'>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p><p>seven</p><p>eight</p>
+            <p>nine</p><p>ten</p><p>eleven</p><p>twelve</p>
+        </div></div>
+    </body></rml>";
+}
+
+// More than 0.1.0's 511-byte web buffer held, with three-byte characters in it so a byte count cannot pass by luck.
+fn string longText()
+{
+    string piece = "0123456789 ab€ ";
+    string s = "";
+    int32 i = 0;
+    while (i < 200) {
+        s = "${s}${piece}";
+        i = i + 1;
+    }
+    return s;
 }
 
 fn void seamTests(ref Tally t)
@@ -127,6 +182,8 @@ fn void seamTests(ref Tally t)
     Seen entered = collect(ui: ui);
     check(t: t, ok: entered.clicks == 2 && entered.first == second && entered.second == panel,
           what: "ENTER clicks the focused button: second's click, then the panel's as it bubbles (${entered.clicks} clicks)");
+    check(t: t, ok: entered.firstTarget == second && entered.secondTarget == second,
+          what: "...and both name second as the target (${entered.firstTarget}, ${entered.secondTarget})");
 
     section(what: "the seam: a real click, injected, comes back as an event");
     UiRect lr = ui.elementRect(handle: last);
@@ -134,10 +191,12 @@ fn void seamTests(ref Tally t)
     Seen clicked = collect(ui: ui);
     check(t: t, ok: clicked.clicks == 2 && clicked.first == last && clicked.second == panel,
           what: "...and arrives as last's click, then the panel's (${clicked.clicks} clicks, first ${clicked.first})");
+    check(t: t, ok: clicked.secondTarget == last, what: "...the panel's naming last as its target (${clicked.secondTarget})");
     UiRect mr = ui.elementRect(handle: meter);
     injectClick(ui: ui, x: centerX(r: mr), y: centerY(r: mr));
     Seen bare = collect(ui: ui);
-    check(t: t, ok: bare.clicks == 1 && bare.first == meter, what: "a click outside the panel reaches only what was hit");
+    check(t: t, ok: bare.clicks == 1 && bare.first == meter && bare.firstTarget == meter,
+          what: "a click outside the panel reaches only what was hit, which is its own target");
 
     section(what: "the seam: controls written and read, quietly");
     string hello = "hello, seam";
@@ -167,6 +226,7 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: back.width == 100.0, what: "removing both puts the document's width back (${back.width})");
 
     section(what: "the seam: a rewrite, and re-binding what it wrote");
+    int32 row0 = ui.bindElement(elementId: "row0");
     int32 row1 = ui.bindElement(elementId: "row1");
     string escaped = escapeText(raw: "<b>Sam</b> & co");
     string rowsRml = "<p id='row1'>x</p><p id='row2'>${escaped}</p>";
@@ -178,6 +238,180 @@ fn void seamTests(ref Tally t)
     UiRect r2 = ui.elementRect(handle: row2);
     check(t: t, ok: r2.height > 0.0, what: "...and the new row has a box (${r2.height} high)");
     check(t: t, ok: ui.bindElement(elementId: "rows") == rows, what: "...and the container's own handle never moved");
+
+    section(what: "the seam: a rewrite releases what it replaced");
+    // row0 was bound before the rewrite above, which did not write it back. Natively this runs under AddressSanitizer.
+    UiRect gone = ui.elementRect(handle: row0);
+    check(t: t, ok: gone.width == 0.0 && gone.height == 0.0, what: "a handle into what a rewrite replaced has no box");
+    string goneText = ui.elementText(handle: row0);
+    ui.setElementText(handle: row0, text: "x");
+    ui.setElementValue(handle: row0, value: 1.0);
+    ui.setElementClass(handle: row0, name: "wide", on: true);
+    ui.setElementAttribute(handle: row0, name: "hidden", value: "");
+    ui.removeElementAttribute(handle: row0, name: "hidden");
+    ui.setInnerRml(handle: row0, rml: "<p>x</p>");
+    ui.update();
+    check(t: t, ok: goneText == "" && ui.elementValue(handle: row0) == 0.0 && !ui.elementChecked(handle: row0) &&
+                    !ui.focusElement(handle: row0) && !ui.setElementProperty(handle: row0, name: "width", value: "10dp"),
+          what: "...every call on it is a no-op");
+    string goneId = ui.elementId(handle: row0);
+    check(t: t, ok: goneId == "row0", what: "...it keeps its id ('${goneId}')");
+    Seen released = collect(ui: ui);
+    check(t: t, ok: released.count == 0, what: "...and nothing it did raised an event (${released.count})");
+    ui.setInnerRml(handle: rows, rml: "<p id='row0'>back</p>");
+    ui.update();
+    UiRect back0 = ui.elementRect(handle: row0);
+    check(t: t, ok: back0.height > 0.0 && ui.bindElement(elementId: "row0") == row0,
+          what: "...until its id is back: then the same handle names the new element (${back0.height} high)");
+
+    section(what: "the seam: one binding on a list tells its rows apart");
+    int32 list = ui.bindElement(elementId: "list");
+    UiRect lb = ui.elementRect(handle: list);
+    // Rows 24 high under 6 of padding (seam.rml), so a point lands on a row by arithmetic, with no row bound.
+    float32 rowX = lb.x + 40.0;
+    injectClick(ui: ui, x: rowX, y: lb.y + 18.0);
+    Seen onA = collect(ui: ui);
+    string aId = ui.elementId(handle: onA.firstTarget);
+    check(t: t, ok: onA.count == 1 && onA.first == list && aId == "row-a-name",
+          what: "a click on the first row is the list's, naming the row's text by its own id ('${aId}')");
+    injectClick(ui: ui, x: rowX, y: lb.y + 42.0);
+    Seen onB = collect(ui: ui);
+    string bId = ui.elementId(handle: onB.firstTarget);
+    check(t: t, ok: onB.count == 1 && onB.first == list && bId == "row-b",
+          what: "...on the second, whose text has no id, it names the row ('${bId}')");
+    injectClick(ui: ui, x: rowX, y: lb.y + 42.0);
+    Seen onB2 = collect(ui: ui);
+    check(t: t, ok: onB2.count == 1 && onB2.firstTarget == onB.firstTarget,
+          what: "...again: the same handle, and naming a target listens to nothing (${onB2.count} events)");
+    injectClick(ui: ui, x: rowX, y: lb.y + 2.0);
+    Seen onList = collect(ui: ui);
+    check(t: t, ok: onList.count == 1 && onList.firstTarget == list, what: "a click on the list's own padding names the list");
+    check(t: t, ok: ui.bindElement(elementId: "row-a-name") == onA.firstTarget,
+          what: "a target is the handle bindElement gives for its id");
+    injectClick(ui: ui, x: rowX, y: lb.y + 18.0);
+    Seen onBound = collect(ui: ui);
+    check(t: t, ok: onBound.count == 2 && onBound.first == onA.firstTarget && onBound.second == list &&
+                    onBound.secondTarget == onA.firstTarget,
+          what: "...and once bound it hears its own click, the list's still naming it (${onBound.count} events)");
+    check(t: t, ok: ui.elementId(handle: 0) == "" && ui.elementId(handle: 9999) == "", what: "an unknown handle has no id");
+
+    section(what: "the seam: an element named without listening");
+    int32 heading = ui.findElement(elementId: "title");
+    UiRect hr = ui.elementRect(handle: heading);
+    check(t: t, ok: heading > 0 && hr.height > 0.0, what: "findElement names an element, and its box reads back (${hr.height} high)");
+    injectClick(ui: ui, x: centerX(r: hr), y: centerY(r: hr));
+    Seen onHeading = collect(ui: ui);
+    check(t: t, ok: onHeading.count == 0, what: "...a click on it raises nothing (${onHeading.count})");
+    int32 rowA = ui.findElement(elementId: "row-a");
+    injectClick(ui: ui, x: rowX, y: lb.y + 18.0);
+    Seen onRowA = collect(ui: ui);
+    check(t: t, ok: onRowA.count == 2 && onRowA.first != rowA && onRowA.second != rowA,
+          what: "a found container hears nothing of its children: the bound text's click and the list's only (${onRowA.count})");
+    check(t: t, ok: ui.findElement(elementId: "list") == list && ui.findElement(elementId: "no-such-id") == 0 &&
+                    ui.findElement(elementId: "") == 0,
+          what: "findElement gives a bound id's own handle, and 0 for no element");
+    UiRect listFull = ui.elementRect(handle: list);
+    ui.setElementAttribute(handle: rowA, name: "hidden", value: "");
+    ui.update();
+    UiRect listShort = ui.elementRect(handle: list);
+    ui.removeElementAttribute(handle: rowA, name: "hidden");
+    check(t: t, ok: listShort.height < listFull.height, what: "...and a found handle takes a write (${listFull.height} -> ${listShort.height})");
+    int32 aName = ui.bindElement(elementId: "row-a-name");
+    ui.setInnerRml(handle: rowA, rml: "<p id='row-a-name'>Alpha, again</p>");
+    ui.update();
+    string rowAId = ui.elementId(handle: rowA);
+    check(t: t, ok: rowAId == "row-a" && ui.bindElement(elementId: "row-a-name") == aName,
+          what: "...and a rewrite, after which what it wrote re-binds ('${rowAId}')");
+    check(t: t, ok: ui.bindElement(elementId: "title") == heading, what: "binding a found id gives the same handle");
+    injectClick(ui: ui, x: centerX(r: hr), y: centerY(r: hr));
+    Seen onBoundHeading = collect(ui: ui);
+    check(t: t, ok: onBoundHeading.count == 1 && onBoundHeading.first == heading, what: "...which now hears its clicks");
+
+    section(what: "the seam: attributes, and a checkbox's state");
+    int32 note = ui.bindElement(elementId: "note");
+    int32 agree = ui.bindElement(elementId: "agree");
+    UiRect shown = ui.elementRect(handle: list);
+    ui.setElementAttribute(handle: note, name: "hidden", value: "");
+    ui.update();
+    UiRect hid = ui.elementRect(handle: list);
+    check(t: t, ok: hid.y < shown.y, what: "`hidden` and the document's [hidden] rule take the note out (${shown.y} -> ${hid.y})");
+    ui.removeElementAttribute(handle: note, name: "hidden");
+    ui.update();
+    UiRect unhid = ui.elementRect(handle: list);
+    check(t: t, ok: unhid.y == shown.y, what: "...and removing it puts it back (${unhid.y})");
+    check(t: t, ok: !ui.elementChecked(handle: agree), what: "a checkbox starts unchecked");
+    ui.setElementAttribute(handle: agree, name: "checked", value: "");
+    check(t: t, ok: ui.elementChecked(handle: agree), what: "writing `checked` checks it");
+    ui.removeElementAttribute(handle: agree, name: "checked");
+    check(t: t, ok: !ui.elementChecked(handle: agree), what: "...and removing it unchecks it");
+    collect(ui: ui);   // natively those writes raised changes; leg_native.kama says so
+    UiRect ar = ui.elementRect(handle: agree);
+    injectClick(ui: ui, x: centerX(r: ar), y: centerY(r: ar));
+    Seen toggled = collect(ui: ui);
+    check(t: t, ok: ui.elementChecked(handle: agree) && toggled.clicks == 1 && toggled.changes >= 1 && toggled.firstTarget == agree,
+          what: "a person's click checks it: a click and a change, naming the box (${toggled.clicks}, ${toggled.changes})");
+    injectClick(ui: ui, x: centerX(r: ar), y: centerY(r: ar));
+    collect(ui: ui);
+    check(t: t, ok: !ui.elementChecked(handle: agree), what: "...and a second click unchecks it");
+    ui.setElementAttribute(handle: agree, name: "checked", value: "");
+    check(t: t, ok: ui.elementChecked(handle: agree), what: "a write after a person's toggle still checks it");
+    collect(ui: ui);
+    check(t: t, ok: !ui.elementChecked(handle: meter) && !ui.elementChecked(handle: 0), what: "nothing but a checkbox is checked");
+    string byAttribute = "set as an attribute";
+    ui.setElementAttribute(handle: field, name: "value", value: byAttribute);
+    string asText = ui.elementText(handle: field);
+    Seen attrQuiet = collect(ui: ui);
+    check(t: t, ok: asText == byAttribute && attrQuiet.count == 0,
+          what: "a `value` attribute is the field's text, written quietly ('${asText}', ${attrQuiet.count} events)");
+    ui.removeElementAttribute(handle: field, name: "value");
+    string emptied = ui.elementText(handle: field);
+    check(t: t, ok: emptied == "", what: "...and removing it empties the field ('${emptied}')");
+    ui.setElementAttribute(handle: 0, name: "hidden", value: "");
+    ui.removeElementAttribute(handle: 0, name: "hidden");
+
+    section(what: "the seam: a long value comes back whole");
+    string big = longText();
+    ui.setElementText(handle: field, text: big);
+    string whole = ui.elementText(handle: field);
+    isize bigBytes = big.length();
+    isize wholeBytes = whole.length();
+    check(t: t, ok: whole == big, what: "a ${bigBytes}-byte value with three-byte characters reads back whole (${wholeBytes})");
+    ui.setElementText(handle: field, text: "");
+
+    section(what: "the seam: one change per edit, for every kind of control");
+    int32 notes = ui.bindElement(elementId: "notes");
+    int32 picker = ui.bindElement(elementId: "pick");
+    int32 choices = ui.bindElement(elementId: "choices");
+    collect(ui: ui);
+    typeInto(ui: ui, id: "field", text: "abc");
+    int32 typedChanges = changesOn(ui: ui, handle: field);
+    check(t: t, ok: typedChanges == 3, what: "three characters typed into a text field: three changes (${typedChanges})");
+    typeInto(ui: ui, id: "notes", text: "xy");
+    int32 notesChanges = changesOn(ui: ui, handle: notes);
+    check(t: t, ok: notesChanges == 2, what: "two into a textarea: two (${notesChanges})");
+    check(t: t, ok: ui.focusElement(handle: level), what: "the range takes the ring");
+    press(ui: ui, key: UI_KEY_RIGHT);
+    int32 stepped = changesOn(ui: ui, handle: level);
+    check(t: t, ok: stepped == 1, what: "a range stepped once: one (${stepped})");
+    UiRect agreeBox = ui.elementRect(handle: agree);
+    injectClick(ui: ui, x: centerX(r: agreeBox), y: centerY(r: agreeBox));
+    int32 toggledOnce = changesOn(ui: ui, handle: agree);
+    check(t: t, ok: toggledOnce == 1, what: "a checkbox toggled: one (${toggledOnce})");
+    int32 choiceB = ui.findElement(elementId: "choice-b");
+    UiRect cb = ui.elementRect(handle: choiceB);
+    injectClick(ui: ui, x: centerX(r: cb), y: centerY(r: cb));
+    int32 chose = changesOn(ui: ui, handle: choices);
+    check(t: t, ok: chose == 1, what: "a radio chosen: one, though RmlUi unchecks its neighbour too (${chose})");
+    check(t: t, ok: ui.elementChecked(handle: choiceB), what: "...and it is checked");
+    pick(ui: ui, selectId: "pick", optionId: "pick-b");
+    int32 picked = changesOn(ui: ui, handle: picker);
+    string pickedValue = ui.elementText(handle: picker);
+    check(t: t, ok: picked == 1 && pickedValue == "b", what: "an option picked: one ('${pickedValue}', ${picked})");
+    check(t: t, ok: ui.focusElement(handle: field), what: "the text field takes the ring");
+    press(ui: ui, key: UI_KEY_ENTER);
+    int32 committed = changesOn(ui: ui, handle: field);
+    check(t: t, ok: committed == 0, what: "ENTER in a text field is a commit, not an edit: none (${committed})");
+    ui.setElementText(handle: field, text: "");
 
     legTests(t: t, ui: ui, first: first, field: field);
 
@@ -195,4 +429,48 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: ui.focusedElement() == only, what: "...and its autofocus holds the ring");
     ui.close();
     check(t: t, ok: !ui.isOpen(), what: "close() closes it");
+}
+
+// A PAGE (`openPage`): the document fills the window without `setViewport`, and scrolls in its own box. The size it
+// fills, and how a wheel is turned, are each leg's (`pageLegTests`, `injectScroll`).
+fn void pageTests(ref Tally t)
+{
+    section(what: "a page: open, fill the window, scroll a box");
+    string font = fontPath();
+    UiContext ui = UiContext.openPage(width: 800, height: 600, fontPath: font);
+    check(t: t, ok: ui.isOpen(), what: "a page opens");
+    if (!ui.isOpen()) { return; }
+    ui.setDpRatio(ratio: 1.0);
+    string text = pageText();
+    check(t: t, ok: ui.loadDocumentText(rml: text), what: "...and loads a document");
+    ui.update();
+    int32 page = ui.bindElement(elementId: "page");
+    int32 log = ui.bindElement(elementId: "log");
+    int32 line1 = ui.bindElement(elementId: "line1");
+    UiRect pr = ui.elementRect(handle: page);
+    check(t: t, ok: pr.x == 0.0 && pr.y == 0.0 && pr.width > 0.0 && pr.height > 0.0,
+          what: "it is shown with no setViewport, at the window's corner (${pr.width} x ${pr.height})");
+    UiRect logBox = ui.elementRect(handle: log);
+    UiRect before = ui.elementRect(handle: line1);
+    check(t: t, ok: injectScroll(ui: ui, x: centerX(r: logBox), y: centerY(r: logBox), notches: 3.0),
+          what: "the wheel is turned over the log");
+    UiRect after = ui.elementRect(handle: line1);
+    check(t: t, ok: after.y < before.y, what: "...and the log scrolls in its own box (${before.y} -> ${after.y})");
+    UiRect logAfter = ui.elementRect(handle: log);
+    check(t: t, ok: logAfter.y == logBox.y, what: "...while the page around it stays put");
+    pageLegTests(t: t, ui: ui, page: page);
+    ui.close();
+    check(t: t, ok: !ui.isOpen(), what: "the page closes");
+
+    section(what: "a stage again, after the page");
+    UiContext stage = UiContext.open(width: 1280, height: 720, fontPath: font);
+    stage.setDpRatio(ratio: 1.0);
+    stage.setViewport(offsetX: 0.0, offsetY: 0.0, scale: 1.0, visible: true);
+    string again = seamText();
+    check(t: t, ok: stage.loadDocumentText(rml: again), what: "a stage opens after a page and loads a document");
+    stage.update();
+    int32 box = stage.bindElement(elementId: "box");
+    UiRect boxRect = stage.elementRect(handle: box);
+    check(t: t, ok: boxRect.width == 1280.0, what: "...shown by setViewport at its own virtual width (${boxRect.width})");
+    stage.close();
 }
