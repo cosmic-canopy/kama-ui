@@ -1,14 +1,13 @@
 file @compileFor(!ARCH_WASM32);
 // ui::native — the native UI backend: RmlUi through @kama/rmlui, which records draw commands rather than drawing.
 //
-// From the-mallow-man's ui/src/native.kama (E7b/E7c), which called its own C++ shim (tmm_ui_native.cpp) directly. That
-// shim is now @kama/rmlui, made general; this file is the SEAM'S POLICY on top of it, which the shim used to carry in
-// C++:
+// The seam once called its own C++ shim directly. That shim is now @kama/rmlui, made general; this file is the SEAM'S
+// POLICY on top of it, which the shim used to carry in C++:
 //   - one RmlUi context per UiContext, one document at a time, shown with its `autofocus` element focused;
 //   - `bindElement` is a @kama/rmlui BINDING listening for click and change — the same handle for the same id while the
 //     document lives, re-finding its element (and moving its listeners) after a rewrite;
 //   - the keyboard is the GLFW-numbered subset in types.kama, translated here to RmlUi's own keys, with "a navigation key
-//     with nothing focused lands on the first tab element" (E7b);
+//     with nothing focused lands on the first tab element";
 //   - `update` steps the clock 1/60 s; writes into controls are quiet.
 //
 // ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
@@ -275,7 +274,7 @@ type value UiContext implements UiHost {
         int32 mods = MOD_NONE;
         if (shift) { mods = MOD_SHIFT; }
 
-        // E7b: nothing to move FROM (the document itself holds focus, after a click on the background, or nothing does)
+        // Nothing to move FROM (the document itself holds focus, after a click on the background, or nothing does)
         // — put the ring on the first tab element and let this press be that, rather than lose it.
         if (down && navKey(code: code) && !this.focusHeld()) {
             Optional<Element> first = this.doc.nextTab(from: this.doc.root(), forward: !shift, wrap: true);
@@ -298,7 +297,7 @@ type value UiContext implements UiHost {
     }
 
     // ⚠️ WITHOUT IT A PAD CANNOT REACH THE DOCUMENT: RmlUi's TAB walk does nothing while the document is unfocused, so
-    // navigation used to work only after a mouse click (friendly-fire-department, from a play session).
+    // navigation used to work only after a mouse click (found in a game built on this seam).
     public unsafe fn void focusDocument()
     {
         if (this.ready == 0) { return; }

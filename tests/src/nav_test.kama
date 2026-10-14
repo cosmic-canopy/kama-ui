@@ -1,5 +1,4 @@
 // ui::nav — a pad's d-pad and stick as arrow presses (pure, so every leg runs it).
-// From the-mallow-man's tests/src/menu_test.kama (E7b, "the pad's presses"), ported to this harness.
 
 import { Tally, check, ui::UiNav, ui::UI_NAV_DELAY_S, ui::UI_NAV_REPEAT_S, ui::UI_KEY_UP, ui::UI_KEY_DOWN,
          ui::UI_KEY_LEFT, ui::UI_KEY_RIGHT };

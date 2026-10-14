@@ -1,8 +1,7 @@
 // The RML -> HTML rewriter (ui::uidoc), on every leg — natively and in the browser, with nothing on disk.
 //
-// From friendly-fire-department's tests/src/uidoc_test.kama (M4 slice 5), ported to this harness; the image section
-// changed with the rule (see src/uidoc/rml.kama). The checks a reasonable person would not think to write, and each
-// guards a decision:
+// The image section changed with the rule (see src/uidoc/rml.kama). The checks a reasonable person would not think to
+// write, and each guards a decision:
 //
 //   - **The `dp` NEGATIVES matter more than the positives.** A blind `replace("dp", "px")` passes every positive check
 //     here and silently renames `#dpad` and `dpi`. Half this suite is inputs that must come out UNCHANGED.
@@ -73,8 +72,8 @@ fn void checkEscaping(ref Tally t)
 
     // ⚠️ **UTF-8 SURVIVES, AND THIS IS THE CHECK THAT SAYS THE BYTE-WISE SCAN IS SAFE.** Every byte of
     // a multi-byte sequence is >= 0x80 and so can never equal one of the four ASCII bytes — but a
-    // name in a non-Latin script is exactly what `lobbyClampName`'s own fixture exists for, so the
-    // claim is pinned rather than reasoned.
+    // player's name in a non-Latin script is exactly the input this exists for, so the claim is
+    // pinned rather than reasoned.
     string kanji = escapeText(raw: "こんにちは");
     check(t: t, ok: kanji == "こんにちは", what: "a name in kanji passes through byte-identical — the scan cannot split a codepoint");
     string mixed = escapeText(raw: "こ<b>ん");
@@ -107,8 +106,8 @@ fn void uidocTests(ref Tally t)
     // ⚠️ THE RULE THAT PUTS `style` BACK, AND IT IS HERE BECAUSE A SCREENSHOT FOUND IT RATHER THAN A
     // CHECK. Defaulting everything to `display: inline` also catches the `<style>` element this
     // function emits, and the UA rule that hides it is precisely what has been overridden — so the
-    // whole stylesheet renders as visible text above the screen. Every structural assertion in
-    // `tools/check-web` passed while it did.
+    // whole stylesheet renders as visible text above the screen. Every structural assertion in a
+    // browser check passed while it did.
     check(t: t, ok: html.contains(substring: ":where(#ui-root style,"), what: "...and `style` is hidden again — the reset's own display:inline would otherwise SHOW the stylesheet");
 
     // ⚠️ THE FIFTH DISAGREEMENT, AND `currentColor` IS THE HALF WORTH PINNING. A form control is
@@ -127,7 +126,7 @@ fn void uidocTests(ref Tally t)
 
     string frac = wrap(css: "a { font-size: 12.5dp; padding: 10dp 14dp 0dp 2dp; }");
     string fracOut = rmlToHtml(rml: ref frac);
-    check(t: t, ok: fracOut.contains(substring: "font-size: 12.5px;"), what: "a fractional size converts — the receipt's slips are 12.5dp");
+    check(t: t, ok: fracOut.contains(substring: "font-size: 12.5px;"), what: "a fractional size converts — 12.5dp text is real");
     check(t: t, ok: fracOut.contains(substring: "padding: 10px 14px 0px 2px;"), what: "...and every value in a four-value shorthand, not just the first");
 
     section(what: "uidoc / ...and NOWHERE ELSE, which is the half that can silently break a screen");
@@ -151,7 +150,7 @@ fn void uidocTests(ref Tally t)
 
     section(what: "uidoc / RmlUi's scrollbar elements become the browser's pseudo-elements");
 
-    // Copied from receipt.rml, which is the only document that scrolls. Longest first in the SOURCE
+    // Copied from a real scrolling document. Longest first in the SOURCE
     // too, so the fixture cannot accidentally pass by ordering.
     string bars = wrap(css: "scrollbarvertical { width: 10dp; } scrollbarvertical slidertrack { background-color: #0c1620; } scrollbarvertical sliderbar { background-color: #35566b; } scrollbarvertical sliderbar:hover { background-color: #4a7290; }");
     string barsOut = rmlToHtml(rml: ref bars);
@@ -172,7 +171,7 @@ fn void uidocTests(ref Tally t)
 
     // ---- the image rule left this file (@kama/ui) ----------------------------------------------------
     //
-    // friendly-fire-department's sixth disagreement rewrote `.pam"` to `.webp"` here. It is now the seam's
+    // The sixth disagreement rewrote `.pam"` to `.webp"` here. It is now the seam's
     // `setImageRewrite`, applied by the web leg as it inserts markup (tools/test-web.sh checks the page), so the
     // rewriter must leave an image's src exactly as the document wrote it.
     section(what: "uidoc / an image src is left as written — the rewrite is the seam's now");

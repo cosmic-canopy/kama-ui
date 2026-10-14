@@ -1,8 +1,7 @@
 // kama_ui_web.js — the web UI backend, as an emcc `--js-library`. The DOM and CSS, and nothing else: no JS library.
 //
-// From the-mallow-man's ui/src/tmm_ui_web.js (E7b/E7c; itself friendly-fire-department@a676ca3's ffd_ui_web.js), renamed
-// tmm_/TmmUi -> kama_ui_/KamaUi, with two changes: the image rewrite (`kama_ui_web_set_image_rewrite`) and text
-// controls in the focus ring (`navItems`).
+// Two changes from the seam's earlier copies: the image rewrite (`kama_ui_web_set_image_rewrite`) and text controls in
+// the focus ring (`navItems`).
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -52,10 +51,10 @@ mergeInto(LibraryManager.library, {
         // of. And `offsetParent === null` is `display:none` and everything inside it, which is exactly
         // the set a player cannot see.
         //
-        // ⚠️ TEXT CONTROLS ARE IN THE RING (CHANGED from the games' copy, which had buttons and [tabindex]
+        // ⚠️ TEXT CONTROLS ARE IN THE RING (CHANGED from the earlier copy, which had buttons and [tabindex]
         // only): RmlUi reaches an `<input>` through the `tab-index: auto` its RCSS gives it, but a browser
-        // reads no RCSS, so the-mallow-man's join panel — whose name and address fields carry no
-        // `tabindex` attribute — walked straight past them on the web while the native ring stopped on both.
+        // reads no RCSS, so a form whose name and address fields carry no `tabindex` attribute walked
+        // straight past them on the web while the native ring stopped on both.
         navItems: function () {
             if (!this.root) return [];
             var list = this.root.querySelectorAll('button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
@@ -155,7 +154,7 @@ mergeInto(LibraryManager.library, {
         KamaUi.root.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
         // ⚠️ `autofocus` DOES NOTHING IN MARKUP SET THROUGH innerHTML — a browser runs it once per page, at load — but
         // RmlUi's document show focuses it (FocusFlag::Auto), and a menu's first button is where a pad starts. So it
-        // is done here, by hand, to keep the two legs' rings starting in the same place (ADDED; the games' copy
+        // is done here, by hand, to keep the two legs' rings starting in the same place (ADDED; the earlier copy
         // started the web ring on nothing).
         var af = KamaUi.root.querySelector('[autofocus]');
         if (af && typeof af.focus === 'function') af.focus();
@@ -188,7 +187,7 @@ mergeInto(LibraryManager.library, {
             // ✅ **THE NATIVE LEG DOES THE SAME**, through @kama/rmlui's bindings, which track each element
             // with RmlUi's ObserverPtr. ⚠️ It could not use this leg's `contains` test on a raw pointer: a
             // destroyed element's memory is commonly reused by its replacement, so the pointers compare
-            // equal — the games' shims found that the hard way. A detached DOM node stays detached.
+            // equal — the earlier shims found that the hard way. A detached DOM node stays detached.
             var old = KamaUi.els[at];
             if (old && KamaUi.root.contains(old)) return at + 1;
             var again = KamaUi.root.querySelector('#' + CSS.escape(id));
@@ -448,7 +447,7 @@ mergeInto(LibraryManager.library, {
         if (KamaUi.stage) KamaUi.stage.style.display = 'none';
     },
 
-    // ---- E7b: focus and text entry (kama_ui_web.h) ------------------------------------------------------
+    // ---- focus and text entry (kama_ui_web.h) -----------------------------------------------------------
 
     kama_ui_web_focus_element__deps: ['$KamaUi'],
     kama_ui_web_focus_element: function (handle) {
@@ -495,7 +494,7 @@ mergeInto(LibraryManager.library, {
     },
 
     // No document: the overlay empties and every handle dies, as at `kama_ui_web_set_document`.
-    // E7c: one inline style property, as the native shim's SetProperty ("" removes it).
+    // One inline style property, as the native shim's SetProperty ("" removes it).
     kama_ui_web_set_property__deps: ['$KamaUi'],
     kama_ui_web_set_property: function (handle, name, value) {
         var el = KamaUi.els[handle - 1];

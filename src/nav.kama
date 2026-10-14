@@ -1,13 +1,12 @@
 // ui::nav — a pad's d-pad and stick as the menus' arrow keys.
 //
-// From the-mallow-man's ui/src/nav.kama (E7b, 2026-10-07; new there, not in friendly-fire-department), unchanged but
-// for the key codes, which now live in types.kama with the rest of the seam's keys.
+// The key codes live in types.kama with the rest of the seam's keys.
 //
-// friendly-fire-department's web leg moved its focus ring for a pad in JavaScript; its native leg had only the
-// keyboard's arrows. Here both legs get it the simplest way there is: RmlUi (and kama_ui_web.js, by document order)
-// already move focus on the arrow keys, so a pad only has to PRESS arrow keys — once on a push, then on a repeat while
-// held — and A is ENTER. What a document wraps or skips is the document's to say (`nav-up`/`nav-down` on its ends), the
-// same on every input device.
+// An earlier web leg moved its focus ring for a pad in JavaScript, and its native leg had only the keyboard's arrows.
+// Here both legs get it the simplest way there is: RmlUi (and kama_ui_web.js, by document order) already move focus on
+// the arrow keys, so a pad only has to PRESS arrow keys — once on a push, then on a repeat while held — and A is ENTER.
+// What a document wraps or skips is the document's to say (`nav-up`/`nav-down` on its ends), the same on every input
+// device.
 //
 // THIS FILE IS THE PRESSING: four direction levels in (0..1 — the stick's and the d-pad's, whichever is stronger, read
 // through the program's own bindings), one key code out per frame or 0. Pure, so a suite can drive it.

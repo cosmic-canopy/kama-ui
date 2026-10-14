@@ -1,7 +1,6 @@
 // kama_ui_web.h — the web half of the UI seam (see src/host.kama).
 //
-// From the-mallow-man's ui/src/tmm_ui_web.h (E7b/E7c; itself friendly-fire-department@a676ca3's ffd_ui_web.h), renamed
-// tmm_/TMM_ -> kama_ui_/KAMA_UI_, with `kama_ui_web_set_image_rewrite` added.
+// `kama_ui_web_set_image_rewrite` is this package's addition to the seam.
 //
 // DECLARATIONS ONLY. The bodies live in kama_ui_web.js and are linked by emcc's `--js-library`, which
 // arrives from this package's `jsLibraries` and propagates to every consumer.
@@ -9,8 +8,8 @@
 // ⚠️ NO `static inline` BODIES AND NO `EM_JS`, and the reason is measured rather than stylistic. kama
 // emits every `extern "…h";` into ONE shared generated header included by EVERY translation unit of
 // the program, so anything here that DEFINES a symbol is defined N times. `EM_JS` does exactly that,
-// and the wasm link fails with `duplicate symbol: __em_js__…` — friendly-fire-department's audio web
-// header carried the same warning because it paid for it first.
+// and the wasm link fails with `duplicate symbol: __em_js__…` — found in a game built on this seam,
+// whose audio web header paid for it first.
 //
 // ⚠️ **0.9.408 CHANGED THE PREMISE OF THE PARAGRAPH ABOVE, AND THE RULE IS KEPT ANYWAY.** kama no
 // longer unions every `extern "<h>"` into one shared header for every TU: a header backing extern
@@ -23,7 +22,7 @@
 // re-run that experiment, so this comment says so rather than guessing in either direction. An FFI
 // header holding declarations and no definitions is right on its own merits — it is what lets the
 // same header be included from anywhere without thinking about how many TUs got it. (Measured under
-// kama 0.9.4xx in friendly-fire-department; this package builds with 0.9.577.)
+// kama 0.9.4xx; this package builds with 0.9.577.)
 //
 // ⚠️ AND THIS BACKEND EMITS NO DRAW COMMANDS AT ALL, WHICH IS THE WHOLE DESIGN. RmlUi hands geometry
 // to a recording render interface because it has no way to put pixels anywhere; a browser lays out
@@ -75,7 +74,7 @@ extern int32_t kama_ui_web_bind(const char* element_id);
 
 // Pop one event: returns the kind (0 none, 1 click, 2 change) and writes the handle. Polled, never
 // pushed — kama holds no callback on either leg (see @kama/rmlui's kama_rmlui.h for the argument).
-// Move the focus ring, or activate what it is on. `key` is an `engine::input::Key` code and only the
+// Move the focus ring, or activate what it is on. `key` is a GLFW key code and only the
 // navigation subset is acted on — TAB, the four arrows, ENTER. ⚠️ **There is no key-UP counterpart**:
 // the DOM moves focus on the press and has nothing to do on a release, so `src/web.kama` drops
 // those rather than crossing the seam to do nothing. See src/types.kama for why the subset is a subset.
@@ -86,10 +85,9 @@ extern int32_t kama_ui_web_focus_held(void);
 
 // Give the live document keyboard focus, so a pad can navigate without a mouse click first.
 //
-// ⚠️ **THIS DECLARATION WAS ONCE MISSING FOR A COMMIT, AND THE WEB BUILD WAS RED THE WHOLE TIME**
-// (friendly-fire-department, 07bb125): its kama `extern` and its JS body both landed, the header did
-// not, and **kama emits no prototype for an `extern`** — so the emitted C called an undeclared
-// function and clang refused it under C99. Every `extern fn` in web.kama needs its line here.
+// ⚠️ **THIS DECLARATION WAS ONCE MISSING FOR A COMMIT, AND THE WEB BUILD WAS RED THE WHOLE TIME**:
+// its kama `extern` and its JS body both landed, the header did not, and **kama emits no prototype
+// for an `extern`** — so the emitted C called an undeclared function and clang refused it under C99. Every `extern fn` in web.kama needs its line here.
 extern void kama_ui_web_focus_document(void);
 
 extern int32_t kama_ui_web_poll_event(int32_t* handle);
@@ -117,7 +115,7 @@ extern void kama_ui_web_set_class(int32_t handle, const char* name, int32_t on);
 
 extern void kama_ui_web_shutdown(void);
 
-// ---- E7b: text entry and focus. A browser types into its own <input>, has no dp ratio to set (the viewport
+// ---- text entry and focus. A browser types into its own <input>, has no dp ratio to set (the viewport
 // transform carries the scale) and keeps its own clock, so those three have no web call.
 extern int32_t kama_ui_web_focus_element(int32_t handle);
 extern int32_t kama_ui_web_focused(void);
@@ -125,7 +123,7 @@ extern int32_t kama_ui_web_text_focused(void);
 extern int32_t kama_ui_web_element_text(int32_t handle, char* buffer, int32_t capacity);
 extern void kama_ui_web_set_text(int32_t handle, const char* text);
 extern void kama_ui_web_close_document(void);
-// E7c: el.style[name] = value ("" removes it).
+// el.style[name] = value ("" removes it).
 extern int32_t kama_ui_web_set_property(int32_t handle, const char* name, const char* value);
 // Every `<img src>` inserted from now on (documents and set_inner) has a trailing `native_ext` rewritten to
 // `web_ext`, in the markup before the browser parses it. "" for either turns it off.

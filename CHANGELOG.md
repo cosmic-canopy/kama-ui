@@ -7,8 +7,8 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.0] — unreleased
 
-The first version: the UI seam the-mallow-man (E7b/E7c, 2026-10-07) and friendly-fire-department (a676ca3) built for
-their menus, as a package. README.md, "Where it came from, and what was reconciled", lists every change.
+The first version: the UI seam earlier kama games built for their menus, as a package. README.md, "Where it came
+from", lists every change.
 
 - `UiHost`, with `UiContext` on the browser's DOM (web) and on RmlUi through `@kama/rmlui` (native).
 - `ui::uidoc`: the RML → HTML rewriter and `escapeText`, now a module.

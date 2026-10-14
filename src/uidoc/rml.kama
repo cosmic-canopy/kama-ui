@@ -1,8 +1,7 @@
 // ui::uidoc — one `.rml` document, rewritten as HTML a browser will accept.
 //
-// From the-mallow-man's uidoc/src/rml.kama (itself friendly-fire-department@a676ca3's, unchanged there), now a module of
-// @kama/ui rather than a package of its own: `ui::uidoc::rmlToHtml`, `ui::uidoc::escapeText`. ONE change: the image
-// rule (`.pam"` -> `.webp"`, the sixth disagreement) left this file. It encoded one game's convention in a general
+// A module of @kama/ui rather than a package of its own: `ui::uidoc::rmlToHtml`, `ui::uidoc::escapeText`. ONE change
+// from the earlier copy: the image rule (`.pam"` -> `.webp"`, the sixth disagreement) left this file. It encoded one game's convention in a general
 // rewriter; it is now `UiHost.setImageRewrite(nativeExt:, webExt:)`, applied by the web leg to every `<img src>` it
 // inserts — `setInnerRml` content included, which the string rule here never reached.
 //
@@ -17,14 +16,14 @@
 //
 // ⚠️ AND IT IS A REWRITER, NOT A PARSER. It does the things RCSS and CSS actually disagree about — five in the
 // stylesheet, listed against the reset below, plus the `dp` unit and the selector scoping — and nothing else. Every one
-// was found by reading real documents (friendly-fire-department's screens). A document that grows a new disagreement
+// was found by reading real documents (a game's screens). A document that grows a new disagreement
 // will look wrong in the browser and right natively, so when that happens the fix belongs HERE and in a suite beside
 // it — not in a per-screen special case.
 //
 // What it deliberately does NOT do: expand entities (RmlUi knows five, HTML knows them all, and the
 // documents already write literal UTF-8 for exactly that reason), touch the body markup beyond stripping
 // comments, or validate anything. Malformed input yields malformed output; the check that the result is
-// right is a real page (this package's tools/test-web.sh, the games' tools/check-web).
+// right is a real page (this package's tools/test-web.sh, or a program's own browser check).
 
 export { rmlToHtml, escapeText };
 
@@ -40,7 +39,7 @@ export { rmlToHtml, escapeText };
 //
 //   1. ⚠️ RCSS BORDERS ARE ALWAYS SOLID AND HAVE NO `border-style` PROPERTY AT ALL. The documents set
 //      `border-width` and `border-color` and expect a border; in CSS that draws NOTHING without a
-//      style. The receipt's hard offset shadow — a right and bottom border stood in for `box-shadow`,
+//      style. A hard offset shadow — a right and bottom border standing in for `box-shadow`,
 //      which RmlUi registers and our native shim cannot render — is entirely this.
 //   2. ⚠️ RmlUi SHIPS NO DEFAULT STYLESHEET, so an unstyled element is `display: inline` and every
 //      document opens by declaring `display: block` for the tags it uses. Defaulting to `inline` here
@@ -57,7 +56,7 @@ export { rmlToHtml, escapeText };
 //      whole appearance on `button`. All of it goes.
 //   4. Fonts and colour inherit rather than being reset by the UA sheet, which is RmlUi's model.
 //   5. ⚠️ A FORM CONTROL IS PAINTED BY THE BROWSER ITSELF, AND NOTHING THE DOCUMENT SAYS ABOUT IT
-//      REACHES THAT PAINT. This is the fifth, added by M4 slice 6's options screen and different in
+//      REACHES THAT PAINT. This is the fifth, added by an options screen and different in
 //      kind from the four before it: RmlUi auto-instances a range's `slidertrack` and `sliderbar` as real
 //      ELEMENTS a stylesheet can colour, while a browser draws a range through its own machinery and
 //      those rules match nothing at all. The screen was a stock Chrome-blue slider in a teal game.
@@ -306,9 +305,9 @@ fn string mapSelectorList(const ref string sel)
 // Two families of selector need real translation rather than a prefix:
 //
 //   - `body` IS the document root, which here is `#ui-root` itself rather than something inside it.
-//   - ⚠️ RmlUi AUTO-INSTANCES A SCROLLBAR AS REAL ELEMENTS and the receipt styles them by tag name
+//   - ⚠️ RmlUi AUTO-INSTANCES A SCROLLBAR AS REAL ELEMENTS and a document styles them by tag name
 //     (`scrollbarvertical slidertrack`, and so on). A browser has no such elements — its scrollbar is
-//     a pseudo-element — so those rules would match nothing and the cream slip would sit under a
+//     a pseudo-element — so those rules would match nothing and a cream panel would sit under a
 //     stock grey scrollbar. Mapping them keeps the DOCUMENT as the source of those colours, which is
 //     the point of this whole file; hard-coding them in the reset would have been a second copy.
 //
@@ -356,9 +355,9 @@ fn bool digitByte(uint8 b)
 //
 // ⚠️ **`setInnerRml` IS A PARSER AND NOTHING ESCAPES ON THE WAY IN.** Everything written through it
 // so far has been ours — literals and numbers — so this has been a debt rather than a bug. It stops
-// being either the moment a PLAYER-SUPPLIED name reaches a document, which M5's lobby is: the relay
-// stores a name a client chose and rebroadcasts it to the whole room, and `lobbyClampName` bounds its
-// LENGTH and says nothing at all about its CONTENT.
+// being either the moment a PLAYER-SUPPLIED name reaches a document, which a multiplayer lobby does: a
+// relay stores a name a client chose and rebroadcasts it to the whole room, and clamping the name's
+// LENGTH says nothing at all about its CONTENT.
 //
 // ⚠️ **AND THE TWO LEGS FAIL DIFFERENTLY, WHICH IS WHY THIS IS NOT A TIDINESS FIX.** Natively an
 // unescaped `<` is an RmlUi parse oddity — a mangled screen. On the web `ui::web`'s `setInnerRml`

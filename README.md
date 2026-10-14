@@ -158,8 +158,8 @@ KAMA=/path/to/kama tools/test-web.sh   # emcc (EMSDK, default ~/emsdk), served l
 
 The two scripts build one program, `tests/`. Shared on both legs:
 
-- `ui::uidoc`: friendly-fire-department's rewriter suite.
-- `ui::UiNav`: the-mallow-man's pad suite.
+- `ui::uidoc`: the rewriter suite.
+- `ui::UiNav`: the focus-navigation suite.
 - **the seam suite**, run against whichever `UiContext` the build has:
   - a document from a file and one from text;
   - every id bound, an unknown one 0, a re-bind giving the same handle;
@@ -193,74 +193,24 @@ the script exit 1 with the check's name.
 ⚠️ Brave 144 hangs in `--headless` on this machine, even for a one-line page. Firefox is the default; set `BROWSER` to
 override.
 
-## Where it came from, and what was reconciled
+## Where it came from
 
-Every source started as the-mallow-man's copy (`ui/`, `uidoc/`; E7b/E7c, 2026-10-07). That copy was itself
-friendly-fire-department's (a676ca3, last changed 2026-09-29), renamed `ffd_` → `tmm_` and extended. After renaming
-FFD's copy the same way and diffing it against the-mallow-man's, **FFD's had no lines the newer copy lacked** apart
-from one comment naming its stage size. Everything FFD built is already in the-mallow-man's copy. Two things came
-from FFD's *other* files: its uidoc test suite (`tests/src/uidoc_test.kama`) and its `licenses/manifest.tsv` shape
-(used in `@kama/rmlui`).
-
-Prefixes are renamed from `tmm_` / `TmmUi` to `kama_ui_` / `KamaUi`. Then:
+Extracted from the UI layer of earlier kama games. Two copies were reconciled: the older had no lines the newer
+lacked, and its document-rewriter test suite (`tests/src/uidoc_test.kama`) came across with it. Prefixes became
+`kama_ui_` / `KamaUi`. The changes made on the way:
 
 | decision | why |
 |---|---|
-| The native backend is `native.kama` over `@kama/rmlui`. The game's C++ shim is gone from this package. | The binding is general now. This file holds only the seam's policy: one document, bind by id, the GLFW key subset, first-press focus, the 1/60 step, quiet writes. |
-| `UiCommand` gained `kind` (clip masks), `transformed` and `transform`. Its pointers are `UnsafeConstPtr`. | RmlUi 6's clip masks and transforms are recorded now, not dropped. The const pointers were owed (the games' headers said so). |
+| The native backend is `native.kama` over `@kama/rmlui`. The original C++ shim is gone from this package. | The binding is general now. This file holds only the seam's policy: one document, bind by id, the GLFW key subset, first-press focus, the 1/60 step, quiet writes. |
+| `UiCommand` gained `kind` (clip masks), `transformed` and `transform`. Its pointers are `UnsafeConstPtr`. | RmlUi 6's clip masks and transforms are recorded now, not dropped. The const pointers were owed (the original headers said so). |
 | `provideImage` takes `ConstView<uint8>`, not `UnsafeConstPtr<uint8>`. | Safe and length-checked; the web leg ignores it either way. |
 | Added `loadDocumentText(rml)`. | Generated documents, and tests that need no files. |
 | `uidoc`'s `.pam"` → `.webp"` rule became `setImageRewrite(nativeExt:, webExt:)`, applied by the web JS before parsing. | One game's convention no longer sits inside a general rewriter. It now reaches `setInnerRml` content too, and it runs before the browser fetches the wrong file. |
 | `uidoc` is a module, `ui::uidoc`, not its own package. | One package to depend on and publish. |
-| The web ring includes `input`, `select` and `textarea`, and excludes `tabindex="-1"` and inline `tab-index: none`. | The legs agree. RmlUi rings every form control. The-mallow-man's join panel fields (no `tabindex` attribute) were skipped on the web and stopped on natively. |
+| The web ring includes `input`, `select` and `textarea`, and excludes `tabindex="-1"` and inline `tab-index: none`. | The legs agree. RmlUi rings every form control. Form fields with no `tabindex` attribute were skipped on the web and stopped on natively. |
 | The web leg focuses `[autofocus]` when a document is set. | `autofocus` does nothing in `innerHTML`. RmlUi's show focuses it, so the rings start in the same place. |
 | The web leg's `setElementProperty` turns `dp` into `px` and reports whether the browser took the value. | `"150dp"` was invalid CSS there, and was dropped without a word. |
-| The contract's comments are generalised (no vote screens, no receipts); the measured warnings stay. | It is a package now. |
-
-## What the-mallow-man and friendly-fire-department would change to switch
-
-Not done; listed so it can be.
-
-**the-mallow-man**
-
-1. Replace the `ui` and `uidoc` dependencies in `game/kama.json` and `tests/kama.json` with `"@kama/ui": { "version":
-   "^0.1.0" }` (`@kama/rmlui` and `@kama/freetype` come with it from the registry). Delete `ui/` and `uidoc/`.
-2. Imports: `ui::…` names are unchanged (`UiContext`, `UiNav`, `UiEvent`, `UiRect`, `UI_KEY_*`). `uidoc::escapeText`
-   and `uidoc::rmlToHtml` become `ui::uidoc::…`.
-3. Linking: drop `"link": ["tmm_ui", "rmlui", "freetype"]` and every `-Lnative/build/<plat>/…` flag. Nothing
-   replaces them: `@kama/rmlui` and `@kama/freetype` vendor their sources, and kama compiles them into the game.
-   - Remove `native/Makefile`'s `ui`, `rmlui` and `freetype` targets, and `tools/fetch-rmlui.sh` /
-     `fetch-freetype.sh`.
-   - Add `"debug": { "optimize": ["rmlui", "freetype"] }` to `game/kama.json`, so a debug game keeps a release-speed
-     layout engine, as the CMake archives gave it.
-   - On Windows, build with `--cxx g++`.
-4. `game/src/menu.kama` around line 425: build the treeline in a `FixedArray<uint8>` (not `malloc`) and pass
-   `rgba: buf.view()`. In `tests/src/menu_test.kama`, pass `texel.view()`.
-5. `game/src/menu.kama` around line 929: skip every `UiCommand` whose `kind` is not `Draw` (or implement clip masks in
-   `gfx`'s UI pass), and optionally apply `transform`. The `cast<UnsafeConstPtr<…>>` around `c.vertices`, `c.indices`
-   and `t.pixels` become no-ops; `gfx`'s UI texture path can take const pointers end to end.
-6. Call `ui.setImageRewrite(nativeExt: ".pam", webExt: ".webp")` once after `UiContext.open`.
-7. Native binding handles are opaque integers, not 1..N. `keyboardui.kama`'s `idOf` compares handles, which is still
-   correct.
-8. The documents need nothing new. The join panel's fields now join the web ring as they always did natively. Add an
-   inline `style="tab-index: none"` to any form control that should stay out of the ring on either leg.
-9. Bump `.kama-version` to 0.9.577 or later (the packages declare `"kama": ">=0.9.577"`, and the game pins 0.9.542).
-   Re-read `docs/KAMA_GAPS.md` at the bump.
-10. `licenses/` keeps its RmlUi and FreeType texts. They are identical to the texts the packages vendor:
-    [`@kama/rmlui`](https://github.com/cosmic-canopy/kama-rmlui/blob/main/licenses/manifest.tsv) and [`@kama/freetype`](https://github.com/cosmic-canopy/kama-freetype/blob/main/licenses/manifest.tsv)'s
-    `licenses/manifest.tsv` point at them. One new row:
-    FreeType's hashing code (`src/base/fthash.c`) carries an MIT notice of its own
-    ([`FreeType-fthash-MIT.txt`](https://github.com/cosmic-canopy/kama-freetype/blob/main/licenses/FreeType-fthash-MIT.txt)).
-
-**friendly-fire-department**: the same steps 1–3, 5 and 9, plus:
-
-- Its kama pin is 0.9.457, so the bump to ≥ 0.9.577 is larger.
-- `game/src/badge_native.kama` passes `rgba.view()` (it holds a `DynamicArray`).
-- `Batcher.putGeometry` (`game/src/game.kama` around line 9512) skips non-`Draw` commands and takes const pointers.
-- The `.pam` → `.webp` badge rule becomes `setImageRewrite`.
-- `uispike` retires in favour of `@kama/rmlui`'s tests, along with its `ffd_ui` / `stdc++` / `c++` link lines.
-- It gains the-mallow-man's E7b/E7c methods (text entry, focus, `updateAt`, `setElementProperty`) for free.
-- Its `tools/check-web` (Playwright) can keep running against the same DOM.
+| The contract's comments are generalised (nothing game-specific); the measured warnings stay. | It is a package now. |
 
 ## Publishing
 

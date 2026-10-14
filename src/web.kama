@@ -2,8 +2,7 @@ file @compileFor(ARCH_WASM32);
 // ui::web — the web UI backend: the browser's own DOM, behind a `--js-library` (kama_ui_web.js). No JS libraries: the
 // page's DOM and CSS do everything.
 //
-// From the-mallow-man's ui/src/web.kama (E7b/E7c; itself friendly-fire-department@a676ca3's), renamed tmm_ -> kama_ui_,
-// with `loadDocumentText` and `setImageRewrite` added and `provideImage` taking a view.
+// This package added `loadDocumentText` and `setImageRewrite`, and `provideImage` takes a view.
 //
 // The mirror of native.kama, gated the other way — and BOTH files carry a single `file` gate rather than one per
 // declaration (kama 0.9.150). This file imports `std::fs` and `ui::uidoc`, neither of which has any business in the
@@ -40,14 +39,14 @@ extern fn void  kama_ui_web_key(int32 key, int32 shift);
 extern fn int32 kama_ui_web_focus_held();
 extern fn void  kama_ui_web_focus_document();
 extern fn void  kama_ui_web_shutdown();
-// E7b (kama_ui_web.h).
+// Text entry and focus (kama_ui_web.h).
 extern fn int32 kama_ui_web_focus_element(int32 handle);
 extern fn int32 kama_ui_web_focused();
 extern fn int32 kama_ui_web_text_focused();
 extern fn int32 kama_ui_web_element_text(int32 handle, UnsafePtr<cchar> buffer, int32 capacity);
 extern fn void  kama_ui_web_set_text(int32 handle, UnsafeConstPtr<cchar> text);
 extern fn void  kama_ui_web_close_document();
-extern fn int32 kama_ui_web_set_property(int32 handle, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);   // E7c
+extern fn int32 kama_ui_web_set_property(int32 handle, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
 extern fn void  kama_ui_web_set_image_rewrite(UnsafeConstPtr<cchar> native_ext, UnsafeConstPtr<cchar> web_ext);
 
 // The longest text a control hands back (`elementText`), as natively.
@@ -181,7 +180,7 @@ type value UiContext implements UiHost {
     // ⚠️ THE THREE POINTER METHODS STAY EMPTY, and each is a different reason worth keeping straight.
     // The browser does its OWN hit-testing and hover from the pointer events the page already
     // receives, so forwarding a second copy of the cursor would buy nothing; and it scrolls an
-    // overflowing element itself, so forwarding the wheel would scroll the receipt TWICE. The native
+    // overflowing element itself, so forwarding the wheel would scroll it TWICE. The native
     // backend needs all three because RmlUi sees no events at all unless it is fed them.
     public unsafe fn void mouseMove(float32 x, float32 y) { }
     public unsafe fn void mouseButton(int32 button, bool down) { }
@@ -189,9 +188,9 @@ type value UiContext implements UiHost {
 
     // ⚠️ **THE BROWSER OWNS FOCUS, BUT IT NEVER SEES THESE KEYS** — a game's platform layer registers its
     // key handlers on the WINDOW and preventDefault-s every mapped key before the DOM overlay could act
-    // on it (the games' tmm_platform.h does), which is what stops SPACE and the arrows scrolling the page
-    // out from under the game. So the move has to be DRIVEN, which is what the JS side does — over the
-    // focusable elements of `#ui-root`, in document order.
+    // on it, which is what stops SPACE and the arrows scrolling the page out from under the game. So the
+    // move has to be DRIVEN, which is what the JS side does — over the focusable elements of `#ui-root`,
+    // in document order.
     //
     // ⚠️ Unlike the wheel, this is NOT a no-op on this leg. The wheel is empty here because the
     // browser scrolls an overflowing element itself and forwarding would scroll twice; a key is the
@@ -275,7 +274,7 @@ type value UiContext implements UiHost {
         this.ready = 0;
     }
 
-    // ---- E7b (host.kama). The browser types, scales and keeps time itself: three no-ops. ----
+    // ---- Text entry and focus (host.kama). The browser types, scales and keeps time itself: three no-ops. ----
 
     public unsafe fn void typeChar(int32 codepoint) { }
 
@@ -324,7 +323,7 @@ type value UiContext implements UiHost {
         kama_ui_web_close_document();
     }
 
-    // E7c (host.kama).
+    // One inline style property (host.kama).
     public unsafe fn bool setElementProperty(int32 handle, const ref string name, const ref string value)
     {
         if (this.ready == 0) { return false; }

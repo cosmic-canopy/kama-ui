@@ -1,8 +1,7 @@
 // ui::host — the contract both UI backends satisfy.
 //
-// From the-mallow-man's ui/src/host.kama (E7b/E7c, 2026-10-07), itself friendly-fire-department@a676ca3's, with the
-// game-specific narrative generalised and three additions marked below (`loadDocumentText`, `setImageRewrite`, and
-// `provideImage` taking a view rather than a raw pointer).
+// Three additions are marked below (`loadDocumentText`, `setImageRewrite`, and `provideImage` taking a view rather than
+// a raw pointer).
 //
 // ONE SET OF DOCUMENTS, TWO BACKENDS. `UiContext` is declared twice — in native.kama over @kama/rmlui and in web.kama
 // over the browser's own DOM — under complementary `@compileFor` gates, so exactly one survives per build and a caller
@@ -12,7 +11,7 @@
 //
 // `for value`: a `UiContext` is a copyable name for a UI whose state lives on the other side of the seam (RmlUi's C++,
 // or the page's DOM), with an explicit `close`. That is what lets a program keep it in a module `static`, which may own
-// nothing — the-mallow-man keeps half a dozen.
+// nothing — a game built on this seam keeps half a dozen.
 //
 // THE UI RENDERS NOTHING. The native backend produces DRAW COMMANDS for the program's renderer (`render`, `command`,
 // `texture`); the web backend's document is real DOM elements the browser paints, so it produces none. That is what lets
@@ -59,7 +58,7 @@ type contract UiHost for value {
     // ADDED: when native and web read different FILES for one picture (natively a format the program decodes, on the
     // web one the browser does), the web leg rewrites every `<img src>` ending in `nativeExt` to end in `webExt` as it
     // inserts markup — documents and `setInnerRml` alike. ("" turns it off.) Both legs agree on the directory; only the
-    // extension differs. A no-op natively. (the-mallow-man: `.pam` natively, `.webp` on the web.)
+    // extension differs. A no-op natively. (For example `.pam` natively, `.webp` on the web.)
     fn void setImageRewrite(const ref string nativeExt, const ref string webExt);
 
     // Size in FRAMEBUFFER PIXELS, never logical points (on a Retina display or a browser with devicePixelRatio > 1 the
