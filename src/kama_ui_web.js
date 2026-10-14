@@ -2,7 +2,9 @@
 //
 // Two changes from the seam's earlier copies: the image rewrite (`kama_ui_web_set_image_rewrite`) and text controls in
 // the focus ring (`navItems`). 0.2.0 added a page (`kama_ui_web_init`'s `page`), an event's target, attributes, the
-// checked state, an uncapped `element_text`, and bindings that follow their id across rewrites (`$KamaUi.el`).
+// checked state, an uncapped `element_text`, and bindings that follow their id across rewrites (`$KamaUi.el`). 0.3.0
+// added the page-level listeners (`install`: keys and claims, hover and the tooltip, drag and drop), more event kinds,
+// titles held as `data-kama-ui-title`, children counted and removed, plain text, scrolling into view and the clipboard.
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -28,8 +30,21 @@ mergeInto(LibraryManager.library, {
         els: [],           // handle N -> els[N - 1]; dense and 1-based, matching the native shim. null once released
         ids: [],           // parallel to els: the id each handle was bound to
         listeners: [],     // parallel to els: the binding's listener, or null for a handle an event only NAMED (a target)
-        events: [],        // {kind, handle, target, current}, drained by poll
+        events: [],        // {kind, handle, target, current, source, key, mods}, drained by poll
         head: 0,
+        loaded: false,     // a document is up: only then are the keys the document's
+        installed: false,  // the page-level listeners are on (`install`)
+        clock: 0,          // the PROGRAM's clock, from update/updateAt: the tooltip's delay is measured on it
+        claims: {},        // claimKey: 'key:mods' -> true, prevented as the key goes down
+        dragSource: null,  // the element being dragged, dragstart to dragend
+        hover: null,       // the element under the pointer (mouseover), and the pointer in client pixels
+        px: 0,
+        py: 0,
+        tip: null,         // the tooltip element (host.kama), and its state — the native leg's, field for field
+        tipOwner: null,
+        tipSince: 0,
+        tipShown: false,
+        tipQuiet: false,
         imageFrom: '',     // kama_ui_web_set_image_rewrite: `<img src` ending in this ...
         imageTo: '',       // ... is rewritten to end in this, before the browser parses the markup
 
@@ -98,10 +113,13 @@ mergeInto(LibraryManager.library, {
             return c.width / cw;
         },
 
-        // The events a binding hears. ⚠️ ONE LIST, BECAUSE THE DETACH MUST NAME EVERY EVENT THE ATTACH DID: 0.1.0's
-        // `clearBindings` removed `click` alone, and left `change` and `input` on every control of every document the
-        // page had shown — a detached field still queueing events for a handle that now named something else.
-        heard: ['click', 'change', 'input'],
+        // The events a binding hears. ⚠️ ONE LIST PER PHASE, BECAUSE THE DETACH MUST NAME EVERY EVENT THE ATTACH DID:
+        // 0.1.0's `clearBindings` removed `click` alone, and left `change` and `input` on every control of every
+        // document the page had shown — a detached field still queueing events for a handle that now named something
+        // else. ⚠️ FOCUS IS HEARD IN THE CAPTURE PHASE (0.3.0) because RmlUi's does not bubble: natively a bound
+        // container hears a child's focus on the way down, ancestors first, and so it does here.
+        heard: ['click', 'change', 'input', 'mousedown', 'drop'],
+        heardCapture: ['focusin', 'focusout'],
 
         // A form control: what has a value and a checked state on BOTH legs (RmlUi's ElementFormControl). A browser
         // gives `value` to more (an `<li>` has a numeric one), which natively has none.
@@ -109,7 +127,12 @@ mergeInto(LibraryManager.library, {
             return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
         },
 
-        // What a DOM event is to the seam: 1 a click, 2 a change, 0 nothing.
+        // What a DOM event is to the seam: 1 a click, 2 a change, 3 a double click, 5 focus, 6 blur, 7 a drop, 0
+        // nothing (4, a key, comes from `onKey`, not from a binding).
+        //
+        // ⚠️ A DOUBLE CLICK IS THE SECOND PRESS (`mousedown` with `detail` 2), NOT THE BROWSER'S `dblclick`, which
+        // arrives after the second click: RmlUi raises its own on the second press, before that click, and the legs
+        // must deliver Click, DoubleClick, Click in one order.
         //
         // ⚠️ **ONE CHANGE PER EDIT, AS RmlUi COUNTS THEM** (CHANGED in 0.2.0, which mapped both `input` and `change` to
         // a change, so a checkbox, a radio or a `<select>` delivered two per edit here and one natively). A browser
@@ -124,6 +147,10 @@ mergeInto(LibraryManager.library, {
         kindOf: function (e) {
             if (!e) return 0;
             if (e.type === 'click') return 1;
+            if (e.type === 'mousedown') return (e.detail === 2 && e.button === 0) ? 3 : 0;
+            if (e.type === 'focusin') return KamaUi.focusable(e.target) ? 5 : 0;
+            if (e.type === 'focusout') return KamaUi.focusable(e.target) ? 6 : 0;
+            if (e.type === 'drop') return 7;
             var t = e.target;
             var live = !!t && (t.tagName === 'TEXTAREA' ||
                                (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'radio'));
@@ -131,15 +158,25 @@ mergeInto(LibraryManager.library, {
         },
 
         // Give handle i + 1 a listener and put it on the element, once. ⚠️ NO stopPropagation (kama_ui_web_bind says
-        // why). It hears `click`, `input` and `change` (`heard`); `kindOf` decides what each is. The event keeps WHERE
-        // it happened (`target`) and who heard it (`current`); the poll walks between the two.
+        // why). It hears `heard` and `heardCapture`; `kindOf` decides what each is. The event keeps WHERE it happened
+        // (`target`) and who heard it (`current`); the poll walks between the two. A drop keeps what was dragged
+        // (`source`), and is not heard by the dragged element or anything inside it — natively RmlUi never drops an
+        // element on itself — and its target is what lies under the pointer beside the dragged element (`dropElement`).
         listen: function (i) {
             if (!KamaUi.listeners[i]) {
                 var handle = i + 1;
                 KamaUi.listeners[i] = function (e) {
                     var kind = KamaUi.kindOf(e);
                     if (!kind) return;
-                    KamaUi.events.push({ kind: kind, handle: handle, target: e.target, current: e.currentTarget });
+                    var rec = { kind: kind, handle: handle, target: e.target, current: e.currentTarget, source: null,
+                                key: 0, mods: (kind === 1 || kind === 3 || kind === 7) ? KamaUi.modsOf(e) : 0 };
+                    if (kind === 7) {
+                        var src = KamaUi.dragSource;
+                        if (!src || src === e.currentTarget || src.contains(e.currentTarget)) return;
+                        rec.target = KamaUi.dropElement(e);
+                        rec.source = src;
+                    }
+                    KamaUi.events.push(rec);
                 };
             }
             KamaUi.attach(i);
@@ -149,6 +186,7 @@ mergeInto(LibraryManager.library, {
             var el = KamaUi.els[i], fn = KamaUi.listeners[i];
             if (!el || !fn) return;
             for (var k = 0; k < KamaUi.heard.length; k++) el.addEventListener(KamaUi.heard[k], fn);
+            for (var c = 0; c < KamaUi.heardCapture.length; c++) el.addEventListener(KamaUi.heardCapture[c], fn, true);
         },
 
         // Let go of handle i + 1's element and take its listener off it. The handle keeps its id and its listener, so
@@ -157,8 +195,248 @@ mergeInto(LibraryManager.library, {
             var el = KamaUi.els[i], fn = KamaUi.listeners[i];
             if (el && fn) {
                 for (var k = 0; k < KamaUi.heard.length; k++) el.removeEventListener(KamaUi.heard[k], fn);
+                for (var c = 0; c < KamaUi.heardCapture.length; c++) el.removeEventListener(KamaUi.heardCapture[c], fn, true);
             }
             KamaUi.els[i] = null;
+        },
+
+        // Release every binding to an element inside `node` (inclusive when `self`): what a rewrite or a removal took.
+        releaseInside: function (node, self) {
+            for (var i = 0; i < KamaUi.els.length; i++) {
+                var b = KamaUi.els[i];
+                if (b && (self || b !== node) && node.contains(b)) KamaUi.release(i);
+            }
+        },
+
+        // ---- 0.3.0 --------------------------------------------------------------------------------------------------
+
+        // UI_MOD_* (types.kama, GLFW's bits) from a DOM event; Cmd folds into Ctrl.
+        modsOf: function (e) {
+            return (e.shiftKey ? 1 : 0) | ((e.ctrlKey || e.metaKey) ? 2 : 0) | (e.altKey ? 4 : 0);
+        },
+
+        // UI_KEY_* from a keydown, or 0 outside types.kama's table. A letter or a digit by its KEY (`code`), as GLFW
+        // names it, whatever the layout types there; the rest by name.
+        keyOf: function (e) {
+            var c = e.code || '';
+            if (/^Key[A-Z]$/.test(c)) return c.charCodeAt(3);
+            if (/^Digit[0-9]$/.test(c)) return c.charCodeAt(5);
+            var named = { Escape: 256, Enter: 257, Tab: 258, Backspace: 259, Delete: 261, ArrowRight: 262,
+                          ArrowLeft: 263, ArrowDown: 264, ArrowUp: 265, PageUp: 266, PageDown: 267, Home: 268, End: 269 };
+            if (named[e.key]) return named[e.key];
+            var f = /^F([1-9]|1[0-2])$/.exec(e.key || '');
+            return f ? 289 + parseInt(f[1], 10) : 0;
+        },
+
+        // Which keys are a `Key` event, as native.kama's `reported`: every key that types no character (all numbered
+        // from 256), a letter or a digit only with Ctrl or Alt.
+        reported: function (key, mods) {
+            if (!key) return false;
+            return key >= 256 || (mods & 6) !== 0;
+        },
+
+        // What reports Focus and Blur, as native.kama's `focusable`: a button, a form control, or a tab index.
+        focusable: function (el) {
+            if (!el || el.nodeType !== 1) return false;
+            var t = el.tagName;
+            if (t === 'BUTTON' || t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return true;
+            return el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
+        },
+
+        // The nearest element at or above `el` with an id, inside the document; null for none.
+        withId: function (el) {
+            for (var n = el; n && KamaUi.root && n !== KamaUi.root; n = n.parentElement) {
+                if (n.nodeType === 1 && n.id) return KamaUi.root.contains(n) ? n : null;
+            }
+            return null;
+        },
+
+        // `withId` as a handle (a Drop's source), 0 once it has left the document.
+        nameOf: function (el) {
+            if (!el || !KamaUi.root || !KamaUi.root.contains(el)) return 0;
+            var w = KamaUi.withId(el);
+            return w ? KamaUi.name(w.id, w) : 0;
+        },
+
+        // What a drop lands on: the element under the pointer, or — when that is the dragged element or inside it —
+        // the first element beneath it, as RmlUi, which never hovers the element it drags.
+        dropElement: function (e) {
+            var src = KamaUi.dragSource, t = e.target;
+            if (t && t.nodeType !== 1) t = t.parentElement;
+            if (!src || !t || !src.contains(t)) return t;
+            var all = document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [];
+            for (var k = 0; k < all.length; k++) {
+                if (!src.contains(all[k]) && KamaUi.root.contains(all[k])) return all[k];
+            }
+            return src.parentElement;
+        },
+
+        clearClass: function (name, except) {
+            if (!KamaUi.root) return;
+            var list = KamaUi.root.querySelectorAll('.' + name);
+            for (var k = 0; k < list.length; k++) if (list[k] !== except) list[k].classList.remove(name);
+        },
+
+        // ⚠️ A `title` IS HELD AS `data-kama-ui-title` (host.kama): the browser would show its own popup over the
+        // package's tooltip, and no CSS turns that off. Run over whatever markup is inserted.
+        untitle: function (node) {
+            if (!node || node.nodeType !== 1) return;
+            var list = [node].concat(Array.prototype.slice.call(node.querySelectorAll('[title]')));
+            for (var k = 0; k < list.length; k++) {
+                var el = list[k];
+                if (!el.hasAttribute('title')) continue;
+                el.setAttribute('data-kama-ui-title', el.getAttribute('title'));
+                el.removeAttribute('title');
+            }
+        },
+
+        // The children `childCount` and `removeChildren` count: elements and runs of text, not blank text between tags
+        // (RmlUi makes no element of it) nor comments.
+        kids: function (el) {
+            var list = [];
+            for (var n = el.firstChild; n; n = n.nextSibling) {
+                if (n.nodeType === 1 || (n.nodeType === 3 && /\S/.test(n.nodeValue))) list.push(n);
+            }
+            return list;
+        },
+
+        // The tooltip element, appended to the document's root (host.kama), unless it is there already.
+        makeTip: function () {
+            if (!KamaUi.root) return;
+            if (KamaUi.tip && KamaUi.root.contains(KamaUi.tip)) return;
+            var t = document.createElement('div');
+            t.id = 'kama-ui-tooltip';
+            t.className = 'ui-tooltip';
+            t.style.position = 'absolute';
+            t.style.pointerEvents = 'none';
+            t.style.display = 'none';
+            t.style.zIndex = '1000';
+            KamaUi.root.appendChild(t);
+            KamaUi.tip = t;
+            KamaUi.tipOwner = null;
+            KamaUi.tipShown = false;
+            KamaUi.tipQuiet = false;
+        },
+
+        // Hidden, and emptied, as natively.
+        hideTip: function () {
+            if (KamaUi.tipShown && KamaUi.tip) {
+                KamaUi.tip.style.display = 'none';
+                KamaUi.tip.textContent = '';
+            }
+            KamaUi.tipShown = false;
+        },
+
+        // A press, the wheel or a scroll: hidden, and kept hidden while the same element is hovered.
+        dismiss: function () {
+            KamaUi.hideTip();
+            KamaUi.tipQuiet = true;
+        },
+
+        // native.kama's `tooltips`, on the program's clock: the owner is the nearest hovered element with a non-empty
+        // title; a new owner restarts the delay (types.kama's UI_TOOLTIP_DELAY, 0.5 s) and hides what was shown.
+        tooltips: function () {
+            if (!KamaUi.loaded || !KamaUi.root) return;
+            KamaUi.makeTip();
+            var owner = null;
+            if (KamaUi.hover && KamaUi.root.contains(KamaUi.hover)) {
+                for (var n = KamaUi.hover; n && n !== KamaUi.root; n = n.parentElement) {
+                    if (n.nodeType === 1 && n.getAttribute('data-kama-ui-title')) { owner = n; break; }
+                }
+            }
+            if (owner !== KamaUi.tipOwner) {
+                KamaUi.hideTip();
+                KamaUi.tipOwner = owner;
+                KamaUi.tipSince = KamaUi.clock;
+                KamaUi.tipQuiet = false;
+                return;
+            }
+            if (!owner || KamaUi.tipShown || KamaUi.tipQuiet) return;
+            if (KamaUi.clock - KamaUi.tipSince < 0.5) return;
+            // 12 and 16 px from the pointer, in the stage's own pixels (native.kama's TIP_LEFT and TIP_TOP).
+            var rr = KamaUi.root.getBoundingClientRect();
+            var scale = KamaUi.root.offsetWidth > 0 ? rr.width / KamaUi.root.offsetWidth : 1;
+            var t = KamaUi.tip;
+            t.textContent = owner.getAttribute('data-kama-ui-title');
+            t.style.left = ((KamaUi.px - rr.left) / scale + 12) + 'px';
+            t.style.top = ((KamaUi.py - rr.top) / scale + 16) + 'px';
+            t.style.display = 'block';
+            KamaUi.tipShown = true;
+        },
+
+        // ---- the page-level listeners, put on once (`install`) and live while a document is up ----
+
+        // ⚠️ ON THE WINDOW, IN THE CAPTURE PHASE, so the claim prevents the browser's default before anything else can
+        // act on the key — Ctrl+S must never reach the save dialog — and so a key reaches the document whatever the
+        // page's own handlers do with it later.
+        onKey: function (e) {
+            if (!KamaUi.loaded) return;
+            var key = KamaUi.keyOf(e), mods = KamaUi.modsOf(e);
+            if (!key) return;
+            if (KamaUi.claims[key + ':' + mods]) e.preventDefault();
+            if (!KamaUi.reported(key, mods)) return;
+            KamaUi.events.push({ kind: 4, handle: 0, target: document.activeElement, current: null, source: null,
+                                 key: key, mods: mods });
+        },
+        onPress: function () { if (KamaUi.loaded) KamaUi.dismiss(); },
+        onOver: function (e) { KamaUi.hover = e.target; KamaUi.px = e.clientX; KamaUi.py = e.clientY; },
+        onMove: function (e) { KamaUi.px = e.clientX; KamaUi.py = e.clientY; },
+        onOut: function (e) {
+            if (!e.relatedTarget || !KamaUi.root.contains(e.relatedTarget)) KamaUi.hover = null;
+        },
+        // A drag starts only from what the document marked `draggable="true"`: anything else a browser drags by itself
+        // (an image, a selection) is cancelled, as natively nothing unmarked drags.
+        onDragStart: function (e) {
+            var t = e.target && e.target.nodeType !== 1 ? e.target.parentElement : e.target;
+            var src = t ? t.closest('[draggable="true"]') : null;
+            if (!src || !KamaUi.root.contains(src)) { e.preventDefault(); return; }
+            KamaUi.dragSource = src;
+            if (e.dataTransfer) {
+                // Firefox starts no drag without data.
+                try { e.dataTransfer.setData('text/plain', ''); e.dataTransfer.effectAllowed = 'move'; } catch (x) { }
+            }
+            src.classList.add('ui-dragging');
+            KamaUi.dismiss();
+        },
+        // Every element of the document takes a drop, as natively: the default (refusing it) is prevented.
+        onDragOver: function (e) {
+            if (!KamaUi.dragSource) return;
+            e.preventDefault();
+            if (e.dataTransfer) { try { e.dataTransfer.dropEffect = 'move'; } catch (x) { } }
+            var over = KamaUi.withId(KamaUi.dropElement(e));
+            KamaUi.clearClass('ui-drop-target', over);
+            if (over) over.classList.add('ui-drop-target');
+        },
+        onDragLeave: function (e) {
+            if (!KamaUi.dragSource) return;
+            if (!e.relatedTarget || !KamaUi.root.contains(e.relatedTarget)) KamaUi.clearClass('ui-drop-target', null);
+        },
+        // Firefox opens dropped text as a page unless the drop's default is prevented.
+        onDropFirst: function (e) { if (KamaUi.dragSource) e.preventDefault(); },
+        onDropLast: function () { KamaUi.clearClass('ui-drop-target', null); },
+        onDragEnd: function () {
+            KamaUi.clearClass('ui-dragging', null);
+            KamaUi.clearClass('ui-drop-target', null);
+            KamaUi.dragSource = null;
+        },
+
+        install: function () {
+            if (KamaUi.installed || !KamaUi.root) return;
+            KamaUi.installed = true;
+            var r = KamaUi.root;
+            window.addEventListener('keydown', KamaUi.onKey, true);
+            window.addEventListener('mousedown', KamaUi.onPress, true);
+            window.addEventListener('wheel', KamaUi.onPress, true);
+            r.addEventListener('scroll', KamaUi.onPress, true);
+            r.addEventListener('mouseover', KamaUi.onOver);
+            r.addEventListener('mousemove', KamaUi.onMove);
+            r.addEventListener('mouseout', KamaUi.onOut);
+            r.addEventListener('dragstart', KamaUi.onDragStart, true);
+            r.addEventListener('dragover', KamaUi.onDragOver, true);
+            r.addEventListener('dragleave', KamaUi.onDragLeave, true);
+            r.addEventListener('drop', KamaUi.onDropFirst, true);
+            r.addEventListener('drop', KamaUi.onDropLast);
+            r.addEventListener('dragend', KamaUi.onDragEnd, true);
         },
 
         // The element a handle names NOW, or null. ⚠️ EVERY ENTRY POINT GOES THROUGH THIS, never `els[h - 1]` directly:
@@ -275,6 +553,7 @@ mergeInto(LibraryManager.library, {
             KamaUi.vv = 0;
         }
         KamaUi.clearBindings();
+        KamaUi.install();
         return 1;
     },
 
@@ -283,6 +562,12 @@ mergeInto(LibraryManager.library, {
         if (!KamaUi.root) return 0;
         KamaUi.clearBindings();
         KamaUi.root.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
+        KamaUi.untitle(KamaUi.root);
+        KamaUi.tip = null;
+        KamaUi.makeTip();
+        KamaUi.dragSource = null;
+        KamaUi.hover = null;
+        KamaUi.loaded = true;
         // ⚠️ `autofocus` DOES NOTHING IN MARKUP SET THROUGH innerHTML — a browser runs it once per page, at load — but
         // RmlUi's document show focuses it (FocusFlag::Auto), and a menu's first button is where a pad starts. So it
         // is done here, by hand, to keep the two legs' rings starting in the same place (ADDED; the earlier copy
@@ -299,11 +584,9 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_set_inner: function (handle, htmlPtr) {
         var el = KamaUi.el(handle);
         if (!el) return;
-        for (var i = 0; i < KamaUi.els.length; i++) {
-            var b = KamaUi.els[i];
-            if (b && b !== el && el.contains(b)) KamaUi.release(i);
-        }
+        KamaUi.releaseInside(el, false);
         el.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
+        KamaUi.untitle(el);
     },
 
     kama_ui_web_set_image_rewrite__deps: ['$KamaUi'],
@@ -457,9 +740,12 @@ mergeInto(LibraryManager.library, {
     },
 
     kama_ui_web_poll_event__deps: ['$KamaUi'],
-    kama_ui_web_poll_event: function (handlePtr, targetPtr) {
+    kama_ui_web_poll_event: function (handlePtr, targetPtr, sourcePtr, keyPtr, modsPtr) {
         HEAP32[handlePtr >> 2] = 0;
         HEAP32[targetPtr >> 2] = 0;
+        HEAP32[sourcePtr >> 2] = 0;
+        HEAP32[keyPtr >> 2] = 0;
+        HEAP32[modsPtr >> 2] = 0;
         if (KamaUi.head >= KamaUi.events.length) {
             // Drained: reset rather than letting the array grow for the life of the page. The native
             // shim does the same with its head index.
@@ -470,6 +756,9 @@ mergeInto(LibraryManager.library, {
         var ev = KamaUi.events[KamaUi.head++];
         HEAP32[handlePtr >> 2] = ev.handle | 0;
         HEAP32[targetPtr >> 2] = KamaUi.targetOf(ev) | 0;
+        HEAP32[sourcePtr >> 2] = KamaUi.nameOf(ev.source) | 0;
+        HEAP32[keyPtr >> 2] = ev.key | 0;
+        HEAP32[modsPtr >> 2] = ev.mods | 0;
         return ev.kind | 0;
     },
 
@@ -567,6 +856,9 @@ mergeInto(LibraryManager.library, {
 
     kama_ui_web_shutdown__deps: ['$KamaUi'],
     kama_ui_web_shutdown: function () {
+        KamaUi.loaded = false;
+        KamaUi.dragSource = null;
+        KamaUi.tip = null;
         KamaUi.clearBindings();
         if (KamaUi.root) KamaUi.root.innerHTML = '';
         if (KamaUi.stage) KamaUi.stage.style.display = 'none';
@@ -647,6 +939,9 @@ mergeInto(LibraryManager.library, {
 
     kama_ui_web_close_document__deps: ['$KamaUi'],
     kama_ui_web_close_document: function () {
+        KamaUi.loaded = false;
+        KamaUi.dragSource = null;
+        KamaUi.tip = null;
         KamaUi.clearBindings();
         if (KamaUi.root) KamaUi.root.innerHTML = '';
     },
@@ -700,7 +995,9 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_append_inner: function (handle, htmlPtr) {
         var el = KamaUi.el(handle);
         if (!el) return;
+        var last = el.lastChild;
         el.insertAdjacentHTML('beforeend', KamaUi.rewrite(UTF8ToString(htmlPtr)));
+        for (var n = last ? last.nextSibling : el.firstChild; n; n = n.nextSibling) KamaUi.untitle(n);
     },
 
     // ⚠️ TWO ATTRIBUTES ARE STATE NATIVELY AND ONLY A DEFAULT HERE. RmlUi keeps a checkbox's state in `checked` and a
@@ -717,6 +1014,7 @@ mergeInto(LibraryManager.library, {
             v.slice(-KamaUi.imageFrom.length) === KamaUi.imageFrom) {
             v = v.slice(0, v.length - KamaUi.imageFrom.length) + KamaUi.imageTo;
         }
+        if (n.toLowerCase() === 'title') { el.setAttribute('data-kama-ui-title', v); return; }   // see `untitle`
         try { el.setAttribute(n, v); } catch (e) { return; }   // a name the DOM refuses ("", a space) does nothing
         if (KamaUi.control(el)) {
             if (n === 'checked') el.checked = true;
@@ -730,10 +1028,96 @@ mergeInto(LibraryManager.library, {
         if (!el || !name) return;
         var n = UTF8ToString(name);
         el.removeAttribute(n);
+        if (n.toLowerCase() === 'title') el.removeAttribute('data-kama-ui-title');
         if (KamaUi.control(el)) {
             if (n === 'checked') el.checked = false;
             if (n === 'value') el.value = '';
         }
+    },
+
+    // ---- 0.3.0 (kama_ui_web.h) --------------------------------------------------------------------------------------
+
+    // The program's clock (host.kama): `seconds` is a step for `update`, the time itself for `updateAt`.
+    kama_ui_web_update__deps: ['$KamaUi'],
+    kama_ui_web_update: function (seconds, absolute) {
+        KamaUi.clock = absolute ? seconds : KamaUi.clock + seconds;
+        KamaUi.tooltips();
+    },
+
+    kama_ui_web_child_count__deps: ['$KamaUi'],
+    kama_ui_web_child_count: function (handle) {
+        var el = KamaUi.el(handle);
+        return el ? KamaUi.kids(el).length : 0;
+    },
+
+    // Clamped to what is there, as natively; what goes is released first, as a rewrite's is.
+    kama_ui_web_remove_children__deps: ['$KamaUi'],
+    kama_ui_web_remove_children: function (handle, from, count) {
+        var el = KamaUi.el(handle);
+        if (!el || count <= 0) return 0;
+        var kids = KamaUi.kids(el);
+        if (from < 0) from = 0;
+        var end = Math.min(kids.length, from + count);
+        for (var k = from; k < end; k++) {
+            if (kids[k].nodeType === 1) KamaUi.releaseInside(kids[k], true);
+            el.removeChild(kids[k]);
+        }
+        return Math.max(0, end - from);
+    },
+
+    // Every non-blank text run inside, in order, as RmlUi's text elements are; "" for a control.
+    kama_ui_web_element_content__deps: ['$KamaUi', '$stringToUTF8', '$lengthBytesUTF8'],
+    kama_ui_web_element_content: function (handle, buf, capacity) {
+        if (buf && capacity > 0) HEAPU8[buf] = 0;
+        var el = KamaUi.el(handle);
+        if (!el || KamaUi.control(el)) return 0;
+        var s = '';
+        var walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (var n = walk.nextNode(); n; n = walk.nextNode()) if (/\S/.test(n.nodeValue)) s += n.nodeValue;
+        if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
+        return lengthBytesUTF8(s);
+    },
+
+    // `textContent`: never parsed. What it replaces is released, as a rewrite's is.
+    kama_ui_web_set_content__deps: ['$KamaUi'],
+    kama_ui_web_set_content: function (handle, text) {
+        var el = KamaUi.el(handle);
+        if (!el || KamaUi.control(el)) return;
+        KamaUi.releaseInside(el, false);
+        el.textContent = text ? UTF8ToString(text) : '';
+    },
+
+    // RmlUi's `ScrollIntoView(true)`: the element's top at its scrollable ancestors' tops, as near as they allow.
+    kama_ui_web_scroll_into_view__deps: ['$KamaUi'],
+    kama_ui_web_scroll_into_view: function (handle) {
+        var el = KamaUi.el(handle);
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', inline: 'nearest' });
+    },
+
+    kama_ui_web_claim_key__deps: ['$KamaUi'],
+    kama_ui_web_claim_key: function (key, mods) {
+        KamaUi.claims[key + ':' + mods] = true;
+    },
+
+    // ⚠️ `navigator.clipboard` IS ASYNCHRONOUS AND MAY REFUSE (no permission, no person's gesture, an insecure page):
+    // the refusal is swallowed, as a native write to an OS clipboard nobody bridged is. `execCommand('copy')` is the
+    // fallback where there is no `navigator.clipboard` at all.
+    kama_ui_web_copy_text: function (text) {
+        var s = text ? UTF8ToString(text) : '';
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(s).catch(function () { });
+                return;
+            }
+            var area = document.createElement('textarea');
+            area.value = s;
+            area.style.position = 'fixed';
+            area.style.opacity = '0';
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand('copy');
+            document.body.removeChild(area);
+        } catch (e) { }
     },
 
     // `.checked`, which is the box's live state (the attribute is only its default). An `<input>` only, as natively.

@@ -17,7 +17,7 @@ file @compileFor(ARCH_WASM32);
 // ⚠️ ONE ASSET, THOUGH. A program's `.rml` documents are the single source for both legs — RmlUi parses them, and
 // `ui::uidoc::rmlToHtml` rewrites the same bytes into HTML here. There is no second copy of any screen.
 
-import { UiHost, UiCommand, UiTexture, UiEvent, UiEventKind, UiRect,
+import { UiHost, UiCommand, UiTexture, UiEvent, UiEventKind, UiRect, UI_MOD_SHIFT,
          core::println,
          ui::uidoc::rmlToHtml, std::fs::readFile, std::io::IoError,
          std::collections::DynamicArray, std::collections::ConstView };
@@ -29,7 +29,8 @@ extern fn int32 kama_ui_web_init(int32 width, int32 height, int32 page);
 extern fn int32 kama_ui_web_set_document(UnsafeConstPtr<cchar> html);
 extern fn void  kama_ui_web_set_inner(int32 handle, UnsafeConstPtr<cchar> html);
 extern fn int32 kama_ui_web_bind(UnsafeConstPtr<cchar> element_id);
-extern fn int32 kama_ui_web_poll_event(UnsafePtr<int32> handle, UnsafePtr<int32> target);
+extern fn int32 kama_ui_web_poll_event(UnsafePtr<int32> handle, UnsafePtr<int32> target, UnsafePtr<int32> source,
+                                       UnsafePtr<int32> key, UnsafePtr<int32> mods);
 extern fn void  kama_ui_web_set_viewport(float32 offset_x, float32 offset_y, float32 scale, int32 visible);
 extern fn int32 kama_ui_web_element_rect(int32 handle, UnsafePtr<float32> x, UnsafePtr<float32> y, UnsafePtr<float32> width, UnsafePtr<float32> height);
 extern fn float32 kama_ui_web_element_value(int32 handle);
@@ -57,6 +58,15 @@ extern fn int32 kama_ui_web_find(UnsafeConstPtr<cchar> element_id);
 extern fn void  kama_ui_web_scroll_to_end(int32 handle);
 extern fn int32 kama_ui_web_is_scrolled_to_end(int32 handle);
 extern fn void  kama_ui_web_append_inner(int32 handle, UnsafeConstPtr<cchar> html);
+// 0.3.0 (kama_ui_web.h).
+extern fn void  kama_ui_web_update(float64 seconds, int32 absolute);
+extern fn int32 kama_ui_web_child_count(int32 handle);
+extern fn int32 kama_ui_web_remove_children(int32 handle, int32 from, int32 count);
+extern fn int32 kama_ui_web_element_content(int32 handle, UnsafePtr<cchar> buffer, int32 capacity);
+extern fn void  kama_ui_web_set_content(int32 handle, UnsafeConstPtr<cchar> text);
+extern fn void  kama_ui_web_scroll_into_view(int32 handle);
+extern fn void  kama_ui_web_claim_key(int32 key, int32 mods);
+extern fn void  kama_ui_web_copy_text(UnsafeConstPtr<cchar> text);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -72,6 +82,11 @@ fn UiEventKind kindOf(int32 raw)
 {
     if (raw == 1) { return UiEventKind::Click; }
     if (raw == 2) { return UiEventKind::Change; }
+    if (raw == 3) { return UiEventKind::DoubleClick; }
+    if (raw == 4) { return UiEventKind::Key; }
+    if (raw == 5) { return UiEventKind::Focus; }
+    if (raw == 6) { return UiEventKind::Blur; }
+    if (raw == 7) { return UiEventKind::Drop; }
     return UiEventKind::None;
 }
 
@@ -187,11 +202,22 @@ type value UiContext implements UiHost {
         kama_ui_web_set_viewport(offset_x: offsetX, offset_y: offsetY, scale: scale, visible: on);
     }
 
-    // ⚠️ ALL EMPTY, AND NOT FOR WANT OF EFFORT. The browser lays out on its own schedule, keeps its own
-    // clock and paints without being asked; there is no frame here to advance and no command list to
-    // rebuild. The native ones exist because RmlUi has to be told.
-    public unsafe fn void update() { }
-    public unsafe fn void updateAt(float64 seconds) { }
+    // The browser lays out on its own schedule, keeps its own clock and paints without being asked; there
+    // is no frame here to lay out and no command list to rebuild, so `render` stays empty. CHANGED (0.3.0):
+    // the clock is the PROGRAM'S, as natively — the tooltip's delay is measured on it (host.kama), so a
+    // hover shows its tooltip after the same number of frames on both legs.
+    public unsafe fn void update()
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_update(seconds: 1.0 / 60.0, absolute: 0);
+    }
+
+    public unsafe fn void updateAt(float64 seconds)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_update(seconds: seconds, absolute: 1);
+    }
+
     public unsafe fn void render() { }
 
     public unsafe fn int32 commandCount() { return 0; }
@@ -212,7 +238,7 @@ type value UiContext implements UiHost {
     // overflowing element itself, so forwarding the wheel would scroll it TWICE. The native
     // backend needs all three because RmlUi sees no events at all unless it is fed them.
     public unsafe fn void mouseMove(float32 x, float32 y) { }
-    public unsafe fn void mouseButton(int32 button, bool down) { }
+    public unsafe fn void mouseButton(int32 button, bool down, int32 mods) { }
     public unsafe fn void mouseWheel(float32 delta) { }
 
     // ⚠️ **THE BROWSER OWNS FOCUS, BUT IT NEVER SEES THESE KEYS** — a game's platform layer registers its
@@ -224,16 +250,36 @@ type value UiContext implements UiHost {
     // ⚠️ Unlike the wheel, this is NOT a no-op on this leg. The wheel is empty here because the
     // browser scrolls an overflowing element itself and forwarding would scroll twice; a key is the
     // opposite case, because the one thing that would have moved the focus was suppressed upstream.
-    public unsafe fn void key(int32 code, bool down, bool shift)
+    //
+    // ⚠️ AND IT RAISES NO `Key` EVENT (0.3.0): the browser's own keydown does, in the JS, so a press the
+    // program also forwards here is still one event.
+    public unsafe fn void key(int32 code, bool down, int32 mods)
     {
         if (this.ready == 0) { return; }
         // Releases are dropped rather than forwarded: the DOM has no focus-move-on-release and the
         // activation happens on the press, so a keyup would be a call that can only do nothing.
         if (!down) { return; }
         int32 sh = 0;
-        if (shift) { sh = 1; }
+        if ((mods & UI_MOD_SHIFT) != 0) { sh = 1; }
         kama_ui_web_key(key: code, shift: sh);
     }
+
+    // The claim is the JS's: only a listener inside the page can prevent a default as the key goes down.
+    public unsafe fn void claimKey(int32 key, int32 mods)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_claim_key(key: key, mods: mods);
+    }
+
+    public unsafe fn void copyText(const ref string text)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_copy_text(text: text.cstr());
+    }
+
+    // The browser pastes from and copies to its own clipboard: nothing to provide, nothing to take (host.kama).
+    public unsafe fn void provideClipboard(const ref string text) { }
+    public unsafe fn Optional<string> takeClipboardWrite() { return Optional::None; }
 
     // ⚠️ **`ready == 0` ANSWERS FALSE.** With no document up there is no ring, so a confirm can only be
     // the screen's own verb.
@@ -286,15 +332,20 @@ type value UiContext implements UiHost {
         kama_ui_web_set_class(handle: handle, name: name.cstr(), on: flag);
     }
 
-    // The target is walked in the JS, at this poll, as natively (types.kama, `UiEvent.target`).
+    // The target and the source are walked in the JS, at this poll, as natively (types.kama, `UiEvent`).
     public unsafe fn Optional<UiEvent> pollEvent()
     {
         if (this.ready == 0) { return Optional::None; }
         int32 handle = 0;
         int32 target = 0;
-        int32 raw = kama_ui_web_poll_event(handle: addr(of: handle), target: addr(of: target));
+        int32 source = 0;
+        int32 key = 0;
+        int32 mods = 0;
+        int32 raw = kama_ui_web_poll_event(handle: addr(of: handle), target: addr(of: target), source: addr(of: source),
+                                           key: addr(of: key), mods: addr(of: mods));
         if (raw == 0) { return Optional::None; }
-        UiEvent ev = UiEvent.make(kind: kindOf(raw: raw), element: handle, target: target);
+        UiEvent ev = UiEvent.make(kind: kindOf(raw: raw), element: handle, target: target, source: source, key: key,
+                                  mods: mods);
         return Optional::Some(value: ev);
     }
 
@@ -366,6 +417,41 @@ type value UiContext implements UiHost {
     {
         if (this.ready == 0) { return false; }
         return kama_ui_web_is_scrolled_to_end(handle: handle) != 0;
+    }
+
+    public unsafe fn int32 childCount(int32 handle)
+    {
+        if (this.ready == 0) { return 0; }
+        return kama_ui_web_child_count(handle: handle);
+    }
+
+    public unsafe fn int32 removeChildren(int32 handle, int32 from, int32 count)
+    {
+        if (this.ready == 0) { return 0; }
+        return kama_ui_web_remove_children(handle: handle, from: from, count: count);
+    }
+
+    // Read as `elementText` is: measured, then read in full.
+    public unsafe fn string elementContent(int32 handle)
+    {
+        if (this.ready == 0) { return ""; }
+        int32 n = kama_ui_web_element_content(handle: handle, buffer: null, capacity: 0);
+        if (n <= 0) { return ""; }
+        DynamicArray<uint8> buf = sized(n: n);
+        kama_ui_web_element_content(handle: handle, buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+        return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
+    }
+
+    public unsafe fn void setElementContent(int32 handle, const ref string text)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_set_content(handle: handle, text: text.cstr());
+    }
+
+    public unsafe fn void scrollIntoView(int32 handle)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_scroll_into_view(handle: handle);
     }
 
     // `insertAdjacentHTML`: the existing nodes are not touched, so nothing is released (host.kama).

@@ -5,40 +5,96 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.2] — unreleased
+## [0.3.0] — unreleased
 
-A log panel that follows its newest line only while it is read at the bottom, and grows without being rewritten.
-Still on @kama/rmlui `^0.1.1`.
+Everything else a tool page needs, in one release: a list that grows and is trimmed in place, keys and shortcuts,
+focus, double clicks, drag and drop, tooltips, the clipboard, and plain text. Built on @kama/rmlui 0.2.0
+(`"@kama/rmlui": { "version": "^0.2.0" }`). It carries 0.2.2, which was never published. The same events reach
+`pollEvent` in the same order on both legs, and the suite compares them as one string per leg.
+
+### Breaking
+
+- `UiEventKind` gains `DoubleClick`, `Key`, `Focus`, `Blur` and `Drop`. A `match` on it needs the new arms.
+- `UiEvent` gains `source`, `key` and `mods`, and `UiEvent.make` takes all six fields.
+- `key(code, down, mods)` takes the UI_MOD_* mask; it was `bool shift`. `mouseButton(button, down, mods)` takes it
+  too.
+- Natively the program forwards every key of the table, with modifiers, not only the navigation subset. `key` sends
+  each to RmlUi first, so the first-press rule ("a navigation key with nothing focused lands on the first control")
+  now runs after the document has heard the key.
 
 ### Added
 
-- `isScrolledToEnd(handle)`: true within a pixel of the end, for a box that cannot scroll, and (natively) while a
-  `scrollToEnd` waits for the next update. False for an unknown handle. The pattern:
-  `bool follow = ui.isScrolledToEnd(handle: log); ui.appendInnerRml(handle: log, rml: line); if (follow) { ui.scrollToEnd(handle: log); }`.
-- `appendInnerRml(handle, rml)`: markup added after the element's children, releasing no binding.
-  - Web: `insertAdjacentHTML('beforeend', …)`. Existing nodes, their listeners, the scroll position and a person's
-    text selection are untouched, and the cost is the new markup's.
-  - Native: @kama/rmlui has no append, so it is a round trip, `setInnerRml(innerRml() + rml)`, O(the whole content)
-    per append. Attributes, inline properties, classes and the scroll position survive it (RmlUi keeps the scroll on
-    the element). Focus, hover and a caret inside do not.
-  - Native bindings inside are listed before the write and re-found right after it. A bound row is clicked before
-    its handle is used again, and it still hears. Without the re-find it was deaf until next touched.
+- **Appending and trimming** (from 0.2.2): `appendInnerRml(handle, rml)` adds markup after the children without
+  touching them. It costs the new markup's: the web uses `insertAdjacentHTML`, and native now uses @kama/rmlui
+  0.2.0's `appendRml` (0.2.2 round-tripped the whole content). `isScrolledToEnd(handle)` lets a log follow only a
+  reader at its end. New: `childCount(handle)` and `removeChildren(handle, from, count)`, so a log drops its oldest
+  lines without a rewrite. What is removed is released.
+- **Keys**: a `Key` event (`key`, `mods`, `element` 0, `target` the focused element) for Enter, Escape, Tab, the
+  arrows, Delete, Backspace, Home/End, PageUp/PageDown and F1–F12. A–Z and 0–9 come only with Ctrl or Alt held, so
+  text still arrives as `Change`. types.kama's UI_KEY_* table grows to cover them, with UI_MOD_SHIFT, UI_MOD_CTRL and
+  UI_MOD_ALT; Cmd folds into Ctrl. The web hears the browser's keydown on the window. Natively the package listens on
+  the document root, in the capture phase.
+- `claimKey(key, mods)`: on the web the browser's default for that combination (Ctrl+S's save dialog) is prevented
+  as the key goes down. Natively there is nothing to prevent, and it does nothing.
+- **Focus and blur**: `Focus` and `Blur` for a button, a form control or an element with a tab index. RmlUi focuses
+  whatever is pressed and sends focus to every element of the focus chain, so natively only these are reported.
+  RmlUi's do not bubble, so both legs listen in the capture phase and deliver them ancestors first.
+- **Double clicks**: `DoubleClick` on the second press of two within half a second, between the two clicks
+  (Click, DoubleClick, Click). Natively it is RmlUi's, on the clock `update`/`updateAt` keeps. On the web it is the
+  second `mousedown` (`detail` 2), not `dblclick`, which arrives after the second click.
+- **Modifiers on a press**: `mods` on a Click, a DoubleClick and a Drop.
+- **Drag and drop**, one markup: `draggable="true"`. Natively the package gives such an element RCSS
+  `drag: drag-drop` wherever markup is inserted. On the web it is HTML5's own attribute; the package starts no drag
+  from anything unmarked and accepts drops anywhere in the document.
+  - A drop is a `Drop` heard by the element dropped on and its bound ancestors, with `target` the element dropped on
+    and `source` the element dragged.
+  - During the drag the dragged element has `ui-dragging` and the element under the pointer has `ui-drop-target`.
+- **Tooltips from `title`**: the package's `#kama-ui-tooltip` (class `ui-tooltip`) shows an element's title after
+  half a second of hover (UI_TOOLTIP_DELAY, on the program's clock), 12 px right of and 16 px below the pointer.
+  - It hides when the pointer leaves, on a press and on a scroll, and stays hidden until another element is hovered.
+  - On the web the browser's own popup never appears: a title is held as `data-kama-ui-title`.
+- **The clipboard**: `copyText(text)` on both legs. On the web it goes through `navigator.clipboard`. Natively
+  `provideClipboard(text)` and `takeClipboardWrite()` pass @kama/rmlui's pulled clipboard through, so the program
+  bridges the OS clipboard. Ctrl+A/C/X/V work in a native field.
+- `scrollIntoView(handle)`: like `scrollToEnd`, at once on the web, after the next layout natively.
+- `elementContent(handle)` / `setElementContent(handle, text)`: an element's plain text, never parsed. A form control
+  ignores both.
+- A `<select>`'s options are rebuilt by `setInnerRml`, `appendInnerRml` and `removeChildren`, and its value settles
+  with no change event (@kama/rmlui 0.2.0 natively).
+- types.kama: `UI_TOOLTIP_DELAY`.
 
 ### Changed
 
-- Native `setElementClass` writes the `class` attribute, as a browser's `classList` does. RmlUi kept a toggled class
-  beside the attributes, so serializing an element (the native append) dropped it.
+- `update` and `updateAt` keep the program's clock on the web too, where they did nothing. The tooltip's delay is
+  measured on that clock.
+- Native `setElementClass` writes the `class` attribute, as a browser's `classList` does (from 0.2.2).
+- Native `scrollToEnd` and `scrollIntoView` queue a mark that `update` honours. With nothing marked, `update` no
+  longer queries the document.
 
 ### Tests
 
-- Native 178 checks (debug, release, AddressSanitizer), web 180 (headless Firefox). The new shared checks cover:
-  following at the end, an append while scrolled up leaving the reader in place, the line before an append keeping
-  its order, handle, class and listener, and a pending `scrollToEnd` reading as at the end. On the web, a selection
-  survives an append.
-- Mutation checks:
-  - Natively, dropping the binding re-find makes the bound line deaf (2 events, not 3).
-  - Natively, a class set with `setClass` is lost.
-  - On the web, `innerHTML +=` loses both the selection and the listener.
+- Native 219 checks (debug, release, AddressSanitizer), web 224 (headless Firefox). The shared checks compare event
+  sequences as strings on both legs:
+  - keys, including Ctrl+S and Alt+1 reported and a plain or Shifted letter not;
+  - focus moving, and a press taking it away;
+  - Click, DoubleClick, Click, and two spaced clicks giving no double click;
+  - Ctrl and Shift+Alt clicks;
+  - a drag with its classes mid-drag and its Drop, and an appended row dragged;
+  - a tooltip's delay, position and three ways of hiding;
+  - scrolling a line into view, and trimming a log;
+  - plain text, and a select rebuilt.
+- Web only: a claimed key prevented (and Cmd+S folded into it), the clipboard spied, and a title held.
+- Native only: Ctrl+A/C/V against the pulled clipboard.
+- Input is injected per leg:
+  - natively as RmlUi's own pointer and keys, a click half a second apart from the last so it never pairs;
+  - on the web as the event sequence a browser fires, including the focus a press gives, since a synthetic event
+    performs no default action.
+- Mutation checks: each of these fails the checks that guard it:
+  - reporting every native focus;
+  - dressing no draggable natively;
+  - counting the web's `dblclick`;
+  - setting a native class with `setClass` (from 0.2.2);
+  - `innerHTML +=` on the web in place of the append (from 0.2.2).
 
 ## [0.2.1] — 2026-10-14
 

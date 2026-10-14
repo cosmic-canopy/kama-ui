@@ -14,19 +14,33 @@ the contract. These are the working rules.
   verdict POSTed back to `tools/web-test-server.py`. A change to `src/` is not proven until both pass. `web.kama`
   and the JS compile only on the web leg, so the native script cannot catch a break there.
 - **The seam suite is shared** (`tests/src/seam_test.kama`). Put a check there unless the legs legitimately differ,
-  and then put it in `tests/src/leg_native.kama` or `leg_web.kama`. The click is injected per leg: RmlUi's input
-  natively, `elementFromPoint` plus a `MouseEvent` on the web.
+  and then put it in `tests/src/leg_native.kama` or `leg_web.kama`. Input is injected per leg (`injectClick`,
+  `injectKey`, `dragBegin`…).
+  - Natively it is RmlUi's own input. A click first runs half a second of the clock, so it never pairs with the last
+    one into a double click.
+  - On the web it is the exact event sequence a browser fires, from `tests/web/kama_ui_test.js`. A synthetic event
+    performs no default action, so the helper does the ones the legs depend on, chiefly the focus a press gives.
+  - **Compare events as one string per leg** (`trace`, `kindsOn`): the same events in the same order is the contract.
 - **`kama_ui_web.h` holds declarations only, never `EM_JS`** (the header says why). Every `extern fn` in `web.kama`
   needs its line there, because kama emits no prototype for an `extern`. JS state lives in `$KamaUi`, and every entry
   point names it in `__deps`.
 - **Keep `UiContext` a `value`.** Programs keep copies in module statics, which may own nothing. Anything a backend
-  must remember lives on the other side of the seam: `@kama/rmlui`'s bindings natively, `$KamaUi` on the web.
+  must remember lives on the other side of the seam: `@kama/rmlui`'s bindings and attributes natively (a quiet
+  `data-kama-ui-*` mark is how `scrollToEnd` waits for the layout), `$KamaUi` on the web. Per-document state that is
+  plain numbers stays on the value: natively the document and the tooltip's timer, so a program keeps one UiContext
+  and passes it by `ref`.
+- **Native events have two sources** in `pollEvent`. Bindings feed `heard`; the package's own listeners on the
+  document root (keys, drag progress, scroll) feed `own`. RmlUi sends Focus and Blur to every element of the focus
+  chain and focuses whatever is pressed, so only `focusable` elements report them. Bindings hear them in the capture
+  phase, and so do the web's: that is why both legs deliver them ancestors first.
 - **On the web every entry point resolves a handle through `KamaUi.el(handle)`**, never `els[h - 1]`. It re-finds a
   released element by its id (what @kama/rmlui's bindings do natively), which is what keeps a stale handle a no-op.
-  A binding's listeners go on and come off through `KamaUi.heard`, one list, so a detach can never miss an event.
+  A binding's listeners go on and come off through `KamaUi.heard` and `heardCapture`, one list per phase, so a
+  detach can never miss an event. Keys, hover, drag and dismissal are page-level listeners (`KamaUi.install`), on
+  once; they act only while a document is up (`KamaUi.loaded`).
 - **`ui::uidoc` is pure** (string in, string out). Its suite runs on both legs. A new RCSS/CSS disagreement goes there,
   with a check, never into a per-screen special case.
-- **This package depends on `@kama/rmlui` `^0.1.1` from the registry** (FreeType comes with it). To work against
+- **This package depends on `@kama/rmlui` `^0.2.0` from the registry** (FreeType comes with it). To work against
   checkouts, override them in a gitignored `kama.local.json` (`"overrides": {"@kama/rmlui": {"path":
   "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one. An override
   applies only once the version resolves, so an UNPUBLISHED version also needs a local file registry holding a tarball

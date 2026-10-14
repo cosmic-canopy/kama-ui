@@ -9,18 +9,31 @@
 
 export {
     UiCommand, UiCommandKind, UiTexture, UiEvent, UiEventKind, UiRect,
-    UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT, UI_KEY_DOWN, UI_KEY_UP,
-    UI_KEY_HOME, UI_KEY_END,
+    UI_KEY_ESCAPE, UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT,
+    UI_KEY_DOWN, UI_KEY_UP, UI_KEY_PAGE_UP, UI_KEY_PAGE_DOWN, UI_KEY_HOME, UI_KEY_END, UI_KEY_F1, UI_KEY_F2,
+    UI_KEY_F3, UI_KEY_F4, UI_KEY_F5, UI_KEY_F6, UI_KEY_F7, UI_KEY_F8, UI_KEY_F9, UI_KEY_F10, UI_KEY_F11, UI_KEY_F12,
+    UI_KEY_A, UI_KEY_B, UI_KEY_C, UI_KEY_D, UI_KEY_E, UI_KEY_F, UI_KEY_G, UI_KEY_H, UI_KEY_I, UI_KEY_J, UI_KEY_K,
+    UI_KEY_L, UI_KEY_M, UI_KEY_N, UI_KEY_O, UI_KEY_P, UI_KEY_Q, UI_KEY_R, UI_KEY_S, UI_KEY_T, UI_KEY_U, UI_KEY_V,
+    UI_KEY_W, UI_KEY_X, UI_KEY_Y, UI_KEY_Z, UI_KEY_0, UI_KEY_1, UI_KEY_2, UI_KEY_3, UI_KEY_4, UI_KEY_5, UI_KEY_6,
+    UI_KEY_7, UI_KEY_8, UI_KEY_9,
+    UI_MOD_SHIFT, UI_MOD_CTRL, UI_MOD_ALT, UI_TOOLTIP_DELAY,
 };
 
-// The keys `UiHost.key` takes. ⚠️ THESE ARE GLFW's NUMBERS, not RmlUi's and not the DOM's: a program forwards its
-// platform's codes unchanged, and each backend translates — the native leg to RmlUi's KeyIdentifier, the web leg in
-// kama_ui_web.js. No backend's key enum crosses the seam in either direction.
+// The keys, as GLFW numbers them. ⚠️ GLFW's NUMBERS, not RmlUi's and not the DOM's: a program forwards its platform's
+// codes unchanged, and each backend translates — the native leg to RmlUi's KeyIdentifier, the web leg in
+// kama_ui_web.js. No backend's key enum crosses the seam in either direction. A letter or a digit names the KEY, as
+// GLFW's do (the US layout's position), not the character a layout types there.
 //
-// THE SUBSET IS THE CONTRACT: TAB, the four arrows and ENTER move and press the focus ring; BACKSPACE, DELETE, HOME and
-// END edit a focused text field. Anything else is dropped by both legs. ⚠️ SPACE IS NOT IN IT: RmlUi would take it as
-// activation, and a game usually has it as a screen verb — one key cannot mean "press this button" and "leave this
-// screen" (use `focusHeld` to make one key do both safely).
+// Two jobs, one table:
+//   - `UiHost.key` takes all of them natively — the program forwards every key it does not keep for itself, with its
+//     modifiers — and acts on a subset on both legs: TAB, the four arrows and ENTER move and press the focus ring;
+//     BACKSPACE, DELETE, HOME and END edit a focused text field; natively CTRL+A, C, X and V select, copy, cut and
+//     paste in one. ⚠️ SPACE IS NOT IN THE TABLE: RmlUi would take it as activation, and a game usually has it as a
+//     screen verb — one key cannot mean "press this button" and "leave this screen" (`focusHeld` makes one key do both).
+//   - `UiEventKind::Key` (0.3.0) reports them back, as `UiEvent.key`: every key here that types no character always,
+//     and a letter or a digit only with CTRL or ALT held (a shortcut) — text arrives as `Change`, not keystroke by
+//     keystroke.
+comptime int32 UI_KEY_ESCAPE = 256;
 comptime int32 UI_KEY_ENTER = 257;
 comptime int32 UI_KEY_TAB = 258;
 comptime int32 UI_KEY_BACKSPACE = 259;
@@ -29,16 +42,83 @@ comptime int32 UI_KEY_RIGHT = 262;
 comptime int32 UI_KEY_LEFT = 263;
 comptime int32 UI_KEY_DOWN = 264;
 comptime int32 UI_KEY_UP = 265;
+comptime int32 UI_KEY_PAGE_UP = 266;
+comptime int32 UI_KEY_PAGE_DOWN = 267;
 comptime int32 UI_KEY_HOME = 268;
 comptime int32 UI_KEY_END = 269;
+comptime int32 UI_KEY_F1 = 290;
+comptime int32 UI_KEY_F2 = 291;
+comptime int32 UI_KEY_F3 = 292;
+comptime int32 UI_KEY_F4 = 293;
+comptime int32 UI_KEY_F5 = 294;
+comptime int32 UI_KEY_F6 = 295;
+comptime int32 UI_KEY_F7 = 296;
+comptime int32 UI_KEY_F8 = 297;
+comptime int32 UI_KEY_F9 = 298;
+comptime int32 UI_KEY_F10 = 299;
+comptime int32 UI_KEY_F11 = 300;
+comptime int32 UI_KEY_F12 = 301;
+comptime int32 UI_KEY_A = 65;
+comptime int32 UI_KEY_B = 66;
+comptime int32 UI_KEY_C = 67;
+comptime int32 UI_KEY_D = 68;
+comptime int32 UI_KEY_E = 69;
+comptime int32 UI_KEY_F = 70;
+comptime int32 UI_KEY_G = 71;
+comptime int32 UI_KEY_H = 72;
+comptime int32 UI_KEY_I = 73;
+comptime int32 UI_KEY_J = 74;
+comptime int32 UI_KEY_K = 75;
+comptime int32 UI_KEY_L = 76;
+comptime int32 UI_KEY_M = 77;
+comptime int32 UI_KEY_N = 78;
+comptime int32 UI_KEY_O = 79;
+comptime int32 UI_KEY_P = 80;
+comptime int32 UI_KEY_Q = 81;
+comptime int32 UI_KEY_R = 82;
+comptime int32 UI_KEY_S = 83;
+comptime int32 UI_KEY_T = 84;
+comptime int32 UI_KEY_U = 85;
+comptime int32 UI_KEY_V = 86;
+comptime int32 UI_KEY_W = 87;
+comptime int32 UI_KEY_X = 88;
+comptime int32 UI_KEY_Y = 89;
+comptime int32 UI_KEY_Z = 90;
+comptime int32 UI_KEY_0 = 48;
+comptime int32 UI_KEY_1 = 49;
+comptime int32 UI_KEY_2 = 50;
+comptime int32 UI_KEY_3 = 51;
+comptime int32 UI_KEY_4 = 52;
+comptime int32 UI_KEY_5 = 53;
+comptime int32 UI_KEY_6 = 54;
+comptime int32 UI_KEY_7 = 55;
+comptime int32 UI_KEY_8 = 56;
+comptime int32 UI_KEY_9 = 57;
 
-// What a click or a change arrived on. Elements are INTEGER HANDLES from `bindElement`, never strings: dispatch is an
-// integer compare rather than a string compare.
-type enum UiEventKind { None, Click, Change }
+// `UiEvent.mods` and `UiHost.key`'s `mods` (0.3.0): a mask, GLFW's bits. ⚠️ macOS's CMD IS FOLDED INTO CTRL — a
+// program passes Cmd as UI_MOD_CTRL natively, and the web leg folds `metaKey` in — so one shortcut is written once
+// (Ctrl+S is Cmd+S on a Mac).
+comptime int32 UI_MOD_SHIFT = 1;
+comptime int32 UI_MOD_CTRL = 2;
+comptime int32 UI_MOD_ALT = 4;
+
+// How long, in seconds of the clock `update`/`updateAt` keep, an element with a `title` is hovered before its tooltip
+// shows (host.kama). kama_ui_web.js carries the same number.
+comptime float64 UI_TOOLTIP_DELAY = 0.5;
+
+// What an event is. Elements are INTEGER HANDLES from `bindElement`, never strings: dispatch is an integer compare
+// rather than a string compare. 0.3.0 added every kind after `Change`:
+//   Click        a press and release on the element (ENTER on the focused one is one too)
+//   Change       one edit of a control (host.kama, `pollEvent`)
+//   DoubleClick  a second press within half a second, between the two clicks (the second click still follows)
+//   Key          a key (types.kama's table) — the document's, so `element` is 0 and `target` names the focused element
+//   Focus, Blur  a focusable element took or lost the focus: a button, a form control, or anything with a tab index
+//   Drop         a dragged element (`source`) was dropped on `target`
+type enum UiEventKind { None, Click, Change, DoubleClick, Key, Focus, Blur, Drop }
 
 type value UiEvent {
     public UiEventKind kind;
-    public int32 element;      // the handle `bindElement` returned: the bound element that heard it
+    public int32 element;      // the handle `bindElement` returned: the bound element that heard it (0 for a Key)
     // ADDED (0.2.0): where it HAPPENED — the nearest element that has an id, walking up from the element the person hit
     // to the bound one (inclusive). So ONE binding on a list says which row or which button inside it was pressed.
     // It is the SAME handle `bindElement` gives for that id (the backend names it on the way out, without listening on
@@ -47,13 +127,19 @@ type value UiEvent {
     // ⚠️ A HANDLE, NOT THE ID'S TEXT: a `value` owns nothing and a `string` is owned, so carrying the text would make
     // every event a `resource` — no more copies out of a match arm, no more `Optional<UiEvent>` passed around freely.
     public int32 target;
+    public int32 source;       // ADDED (0.3.0): a Drop's dragged element, named as `target` is; 0 for every other kind
+    public int32 key;          // ADDED (0.3.0): a Key's UI_KEY_*; 0 for every other kind
+    public int32 mods;         // ADDED (0.3.0): UI_MOD_* held — on a Key, a Click, a DoubleClick and a Drop; else 0
 
-    // CHANGED (0.2.0): takes the target.
-    public ctor make(UiEventKind kind, int32 element, int32 target)
+    // CHANGED (0.3.0): every field.
+    public ctor make(UiEventKind kind, int32 element, int32 target, int32 source, int32 key, int32 mods)
     {
         this.kind = kind;
         this.element = element;
         this.target = target;
+        this.source = source;
+        this.key = key;
+        this.mods = mods;
     }
 }
 

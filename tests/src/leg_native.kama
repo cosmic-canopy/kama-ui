@@ -1,29 +1,95 @@
 file @compileFor(!ARCH_WASM32);
-// The native leg's half of the suite: how a click and a wheel are injected (RmlUi's own input), the font, the verdict,
-// and the checks only this leg can make — the recorded commands and textures, typing, the first-press focus rule, and
-// a page sized by `setSize`.
+// The native leg's half of the suite: how input is injected (RmlUi's own: the pointer, its buttons and wheel, keys), the
+// font, the verdict, and the checks only this leg can make — the recorded commands and textures, typing, the first-press
+// focus rule, the clipboard the program bridges, and a page sized by `setSize`.
 
 import {
     Tally, check, section, Seen, collect, press,
     core::println,
     ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect,
-    ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE,
+    ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE, ui::UI_KEY_A, ui::UI_KEY_C,
+    ui::UI_KEY_V, ui::UI_MOD_CTRL,
 };
-export { fontPath, injectClick, injectScroll, typeInto, pick, legTests, pageLegTests, report };
+export {
+    fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
+    typeInto, pick, legTests, pageLegTests, report,
+};
 
 // RmlUi's sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence (tests/fonts/SOURCES).
 // Paths are relative to the package root, where tools/test.sh runs.
 fn string fontPath() { return "tests/fonts/LatoLatin-Regular.ttf"; }
 
-// A click as a person makes one: the pointer to the point, the left button down and up, then the update that
-// dispatches. True: there is no page to miss.
-fn bool injectClick(ref UiContext ui, float32 x, float32 y)
+// Half a second and more of RmlUi's clock, so the next press never pairs with the last into a double click.
+fn void apart(ref UiContext ui)
 {
+    int32 i = 0;
+    while (i < 31) {
+        ui.update();
+        i = i + 1;
+    }
+}
+
+// A click as a person makes one, on its own: time apart from the last, the pointer to the point, the left button down
+// and up with the modifiers held, then the update that dispatches. True: there is no page to miss.
+fn bool injectClick(ref UiContext ui, float32 x, float32 y) { return injectModClick(ui: ui, x: x, y: y, mods: 0); }
+
+fn bool injectModClick(ref UiContext ui, float32 x, float32 y, int32 mods)
+{
+    apart(ui: ui);
     ui.mouseMove(x: x, y: y);
-    ui.mouseButton(button: 0, down: true);
-    ui.mouseButton(button: 0, down: false);
+    ui.mouseButton(button: 0, down: true, mods: mods);
+    ui.mouseButton(button: 0, down: false, mods: mods);
     ui.update();
     return true;
+}
+
+// Two clicks within RmlUi's half second: Click, DoubleClick (on the second press), Click.
+fn bool injectDoubleClick(ref UiContext ui, float32 x, float32 y)
+{
+    apart(ui: ui);
+    ui.mouseMove(x: x, y: y);
+    ui.mouseButton(button: 0, down: true, mods: 0);
+    ui.mouseButton(button: 0, down: false, mods: 0);
+    ui.update();
+    ui.mouseButton(button: 0, down: true, mods: 0);
+    ui.mouseButton(button: 0, down: false, mods: 0);
+    ui.update();
+    return true;
+}
+
+// A key as a person presses it, down and up with its modifiers: what the program forwards (host.kama).
+fn void injectKey(ref UiContext ui, int32 code, int32 mods)
+{
+    ui.key(code: code, down: true, mods: mods);
+    ui.key(code: code, down: false, mods: mods);
+}
+
+// The pointer over a point; RmlUi takes the hover at once.
+fn void injectHover(ref UiContext ui, float32 x, float32 y) { ui.mouseMove(x: x, y: y); }
+
+// A drag as a person makes one, not yet let go: a press on the source, a move off it (which starts RmlUi's drag), then
+// steps over to the target, each laid out.
+fn void dragBegin(ref UiContext ui, float32 fromX, float32 fromY, float32 toX, float32 toY)
+{
+    apart(ui: ui);
+    ui.mouseMove(x: fromX, y: fromY);
+    ui.update();
+    ui.mouseButton(button: 0, down: true, mods: 0);
+    ui.update();
+    int32 step = 1;
+    while (step <= 4) {
+        float32 f = cast<float32>(step) / 4.0;
+        ui.mouseMove(x: fromX + (toX - fromX) * f + 1.0, y: fromY + (toY - fromY) * f);
+        ui.update();
+        step = step + 1;
+    }
+}
+
+// ...and let go.
+fn void dragEnd(ref UiContext ui)
+{
+    ui.mouseButton(button: 0, down: false, mods: 0);
+    ui.update();
 }
 
 // The wheel as a person turns it: the pointer over the point first (it decides what scrolls), then the notches, then a
@@ -118,6 +184,30 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     check(t: t, ok: ui.focusedElement() == 0 && !ui.focusHeld(), what: "the document alone holds no ring");
     press(ui: ui, key: UI_KEY_DOWN);
     check(t: t, ok: ui.focusedElement() == first, what: "...and the first arrow lands on the first button");
+
+    section(what: "native: the clipboard is the program's to bridge");
+    ui.copyText(text: "a copy");
+    Optional<string> copied = ui.takeClipboardWrite();
+    string copiedText = match (copied) { case None: "(none)"; case Some(value: s): copy s; };
+    Optional<string> nothing = ui.takeClipboardWrite();
+    bool drained = match (nothing) { case None: true; case Some(value: s): false; };
+    check(t: t, ok: copiedText == "a copy" && drained, what: "copyText queues one write for the OS clipboard ('${copiedText}')");
+    ui.setElementText(handle: field, text: "all of it");
+    check(t: t, ok: ui.focusElement(handle: field), what: "the field takes the ring");
+    injectKey(ui: ui, code: UI_KEY_A, mods: UI_MOD_CTRL);
+    injectKey(ui: ui, code: UI_KEY_C, mods: UI_MOD_CTRL);
+    ui.update();
+    Optional<string> fromField = ui.takeClipboardWrite();
+    string fieldCopy = match (fromField) { case None: "(none)"; case Some(value: s): copy s; };
+    check(t: t, ok: fieldCopy == "all of it", what: "Ctrl+A, Ctrl+C in a field queues its text ('${fieldCopy}')");
+    ui.setElementText(handle: field, text: "");
+    ui.provideClipboard(text: "pasted");
+    injectKey(ui: ui, code: UI_KEY_V, mods: UI_MOD_CTRL);
+    ui.update();
+    string pasted = ui.elementText(handle: field);
+    check(t: t, ok: pasted == "pasted", what: "...and Ctrl+V pastes what the program provided ('${pasted}')");
+    ui.setElementText(handle: field, text: "");
+    collect(ui: ui);
 }
 
 fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)

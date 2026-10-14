@@ -9,7 +9,8 @@
       So is the checkbox. The list is one binding over rows of a fixed height, so a click lands on a row by arithmetic
       without binding it; its first row's text has an id of its own, its second's does not. `[hidden]` is the
       document's own rule: neither leg hides anything for the attribute alone. The textarea, the select and the radios
-      are one of each control kind, for counting changes per edit; they are out of the ring too.
+      are one of each control kind, for counting changes per edit; they are out of the ring too. The rows drag
+      (`draggable="true"`), and the package's two drag classes change their width, which a box shows on both legs.
     -->
     <style>
         body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
@@ -29,6 +30,8 @@
         input.range sliderbar { width: 12dp; background-color: #ffffffff; }
         #list { padding: 6dp; width: 300dp; background-color: #283020ff; }
         #list div, #list p { height: 24dp; }
+        #list div.ui-dragging { width: 200dp; }
+        #list div.ui-drop-target { width: 250dp; }
         #agree { width: 20dp; height: 20dp; }
         [hidden] { display: none; }
         textarea { display: block; width: 240dp; height: 40dp; margin-top: 4dp; }
@@ -53,8 +56,8 @@
     <img id="pic" src="/img/dot.pam"/>
     <p id="note">A note</p>
     <div id="list">
-        <div id="row-a"><p id="row-a-name">Alpha</p></div>
-        <div id="row-b"><p>Beta</p></div>
+        <div id="row-a" draggable="true"><p id="row-a-name">Alpha</p></div>
+        <div id="row-b" draggable="true"><p>Beta</p></div>
     </div>
     <input id="agree" type="checkbox" value="yes" style="tab-index: none;"/>
     <textarea id="notes" style="tab-index: none;"></textarea>

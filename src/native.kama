@@ -7,9 +7,12 @@ file @compileFor(!ARCH_WASM32);
 //   - `bindElement` is a @kama/rmlui BINDING listening for click and change — the same handle for the same id while the
 //     document lives, re-finding its element (and moving its listeners) after a rewrite; an event's target is the
 //     binding of the nearest element with an id, named at the poll without listening;
-//   - the keyboard is the GLFW-numbered subset in types.kama, translated here to RmlUi's own keys, with "a navigation key
+//   - the keyboard is the GLFW-numbered table in types.kama, translated here to RmlUi's own keys, with "a navigation key
 //     with nothing focused lands on the first tab element";
-//   - `update` steps the clock 1/60 s; writes into controls are quiet.
+//   - `update` steps the clock 1/60 s; writes into controls are quiet;
+//   - (0.3.0) the package's own listeners on the document's root — keys, the drag's progress, scrolling — whose events
+//     `pollEvent` turns into `Key` events and the drag's classes; `draggable="true"` given RCSS `drag: drag-drop`; and
+//     the tooltip, an element the package appends to every document and shows from `update`.
 //
 // ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
 // would reach the wasm leg too; the whole-unit gate (kama 0.9.150) keeps it — and its import of @kama/rmlui — out. The
@@ -20,35 +23,94 @@ file @compileFor(!ARCH_WASM32);
 
 import {
     UiHost, UiCommand, UiCommandKind, UiTexture, UiEvent, UiEventKind, UiRect,
-    UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT, UI_KEY_DOWN, UI_KEY_UP,
-    UI_KEY_HOME, UI_KEY_END,
+    UI_KEY_ESCAPE, UI_KEY_ENTER, UI_KEY_TAB, UI_KEY_BACKSPACE, UI_KEY_DELETE, UI_KEY_RIGHT, UI_KEY_LEFT, UI_KEY_DOWN,
+    UI_KEY_UP, UI_KEY_PAGE_UP, UI_KEY_PAGE_DOWN, UI_KEY_HOME, UI_KEY_END, UI_KEY_F1, UI_KEY_F12, UI_KEY_A, UI_KEY_Z,
+    UI_KEY_0, UI_KEY_9, UI_MOD_SHIFT, UI_MOD_CTRL, UI_MOD_ALT, UI_TOOLTIP_DELAY,
     rmlui::RmlUi, rmlui::RmlUiError, rmlui::Context, rmlui::Document, rmlui::Element, rmlui::Binding, rmlui::Event,
-    rmlui::EventType, rmlui::Command, rmlui::CommandKind, rmlui::Texture, rmlui::Rect, rmlui::BoxArea, rmlui::Modal,
-    rmlui::Focus, rmlui::LISTEN_BUBBLE,
-    rmlui::KEY_RETURN, rmlui::KEY_TAB, rmlui::KEY_BACKSPACE, rmlui::KEY_DELETE, rmlui::KEY_RIGHT, rmlui::KEY_LEFT,
-    rmlui::KEY_DOWN, rmlui::KEY_UP, rmlui::KEY_HOME, rmlui::KEY_END, rmlui::MOD_NONE, rmlui::MOD_SHIFT,
-    std::collections::ConstView, std::collections::DynamicArray,
+    rmlui::Listener, rmlui::EventType, rmlui::Command, rmlui::CommandKind, rmlui::Texture, rmlui::Rect, rmlui::BoxArea,
+    rmlui::Modal, rmlui::Focus, rmlui::LISTEN_BUBBLE, rmlui::LISTEN_CAPTURE,
+    rmlui::KEY_RETURN, rmlui::KEY_NUMPAD_ENTER, rmlui::KEY_TAB, rmlui::KEY_BACKSPACE, rmlui::KEY_DELETE,
+    rmlui::KEY_RIGHT, rmlui::KEY_LEFT, rmlui::KEY_DOWN, rmlui::KEY_UP, rmlui::KEY_HOME, rmlui::KEY_END,
+    rmlui::KEY_ESCAPE, rmlui::KEY_PAGE_UP, rmlui::KEY_PAGE_DOWN, rmlui::KEY_F1, rmlui::KEY_F12, rmlui::KEY_A,
+    rmlui::KEY_Z, rmlui::KEY_0, rmlui::KEY_9,
+    rmlui::MOD_NONE, rmlui::MOD_SHIFT, rmlui::MOD_CTRL, rmlui::MOD_ALT, rmlui::MOD_META,
+    std::collections::ConstView,
     std::fmt::parse, std::fmt::ParseError,
 };
 export { UiContext };
 
-// UI_KEY_* (GLFW's numbers) -> RmlUi's KeyIdentifier, or 0 for a key outside the subset — which is DROPPED: the program
-// holds every key on its way past and forwards only these, so the document never competes with a rebind screen or a
-// verb reading raw keys.
+// UI_KEY_* (GLFW's numbers) -> RmlUi's KeyIdentifier, or 0 for a key outside types.kama's table — which is DROPPED.
+// The letters, digits and function keys are runs in both numberings, so they map by offset.
 fn int32 rmlKey(int32 code)
 {
+    if (code >= UI_KEY_A && code <= UI_KEY_Z) { return KEY_A + (code - UI_KEY_A); }
+    if (code >= UI_KEY_0 && code <= UI_KEY_9) { return KEY_0 + (code - UI_KEY_0); }
+    if (code >= UI_KEY_F1 && code <= UI_KEY_F12) { return KEY_F1 + (code - UI_KEY_F1); }
+    if (code == UI_KEY_ESCAPE) { return KEY_ESCAPE; }
     if (code == UI_KEY_ENTER) { return KEY_RETURN; }
     if (code == UI_KEY_TAB) { return KEY_TAB; }
     if (code == UI_KEY_RIGHT) { return KEY_RIGHT; }
     if (code == UI_KEY_LEFT) { return KEY_LEFT; }
     if (code == UI_KEY_DOWN) { return KEY_DOWN; }
     if (code == UI_KEY_UP) { return KEY_UP; }
+    if (code == UI_KEY_PAGE_UP) { return KEY_PAGE_UP; }
+    if (code == UI_KEY_PAGE_DOWN) { return KEY_PAGE_DOWN; }
     // The caret's keys, for a focused text field. Inert on a button.
     if (code == UI_KEY_BACKSPACE) { return KEY_BACKSPACE; }
     if (code == UI_KEY_DELETE) { return KEY_DELETE; }
     if (code == UI_KEY_HOME) { return KEY_HOME; }
     if (code == UI_KEY_END) { return KEY_END; }
     return 0;
+}
+
+// The way back, for a `Key` event: RmlUi's KeyIdentifier -> UI_KEY_*, 0 outside the table.
+fn int32 uiKey(int32 k)
+{
+    if (k >= KEY_A && k <= KEY_Z) { return UI_KEY_A + (k - KEY_A); }
+    if (k >= KEY_0 && k <= KEY_9) { return UI_KEY_0 + (k - KEY_0); }
+    if (k >= KEY_F1 && k <= KEY_F12) { return UI_KEY_F1 + (k - KEY_F1); }
+    if (k == KEY_ESCAPE) { return UI_KEY_ESCAPE; }
+    if (k == KEY_RETURN || k == KEY_NUMPAD_ENTER) { return UI_KEY_ENTER; }
+    if (k == KEY_TAB) { return UI_KEY_TAB; }
+    if (k == KEY_RIGHT) { return UI_KEY_RIGHT; }
+    if (k == KEY_LEFT) { return UI_KEY_LEFT; }
+    if (k == KEY_DOWN) { return UI_KEY_DOWN; }
+    if (k == KEY_UP) { return UI_KEY_UP; }
+    if (k == KEY_PAGE_UP) { return UI_KEY_PAGE_UP; }
+    if (k == KEY_PAGE_DOWN) { return UI_KEY_PAGE_DOWN; }
+    if (k == KEY_BACKSPACE) { return UI_KEY_BACKSPACE; }
+    if (k == KEY_DELETE) { return UI_KEY_DELETE; }
+    if (k == KEY_HOME) { return UI_KEY_HOME; }
+    if (k == KEY_END) { return UI_KEY_END; }
+    return 0;
+}
+
+// UI_MOD_* (GLFW's bits) <-> RmlUi's MOD_*. Cmd (RmlUi's META) folds into CTRL on the way out, as types.kama says.
+fn int32 rmlMods(int32 mods)
+{
+    int32 m = MOD_NONE;
+    if ((mods & UI_MOD_SHIFT) != 0) { m = m | MOD_SHIFT; }
+    if ((mods & UI_MOD_CTRL) != 0) { m = m | MOD_CTRL; }
+    if ((mods & UI_MOD_ALT) != 0) { m = m | MOD_ALT; }
+    return m;
+}
+
+fn int32 uiMods(int32 m)
+{
+    int32 mods = 0;
+    if ((m & MOD_SHIFT) != 0) { mods = mods | UI_MOD_SHIFT; }
+    if ((m & (MOD_CTRL | MOD_META)) != 0) { mods = mods | UI_MOD_CTRL; }
+    if ((m & MOD_ALT) != 0) { mods = mods | UI_MOD_ALT; }
+    return mods;
+}
+
+// Which keys become a `Key` event (types.kama): every key of the table that types no character — they are all
+// numbered from 256 — and a letter or a digit only as a shortcut, with Ctrl or Alt held.
+fn bool reported(int32 key, int32 mods)
+{
+    if (key == 0) { return false; }
+    if (key >= UI_KEY_ESCAPE) { return true; }
+    return (mods & (UI_MOD_CTRL | UI_MOD_ALT)) != 0;
 }
 
 // A `class` attribute with `name` switched: every occurrence dropped, then added once at the end when `on`.
@@ -64,6 +126,62 @@ fn string toggled(const ref string list, const ref string name, bool on)
         if (result.isEmpty()) { result = copy name; } else { result = "${result} ${name}"; }
     }
     return result;
+}
+
+// Where the tooltip goes from the pointer, in pixels (host.kama; kama_ui_web.js carries the same two numbers).
+comptime int32 TIP_LEFT = 12;
+comptime int32 TIP_TOP = 16;
+
+// ⚠️ A CLASS IS WRITTEN THROUGH THE `class` ATTRIBUTE (0.2.2), as a browser's `classList` writes it: RmlUi keeps a class
+// `setClass` toggled BESIDE the attributes, where serializing the element (`innerRml`) does not see it. RmlUi turns the
+// attribute into the class list itself.
+unsafe fn void classOn(Element el, const ref string name, bool on)
+{
+    string attr = "class";
+    Optional<string> current = el.attribute(name: attr);
+    string list = match (current) { case None: ""; case Some(value: s): copy s; };
+    string next = toggled(list: list, name: name, on: on);
+    if (next != list) { el.setAttributeQuietly(name: attr, value: next); }
+}
+
+// A form control: what has a value of its own (`elementText`), not text content.
+unsafe fn bool isControl(Element el)
+{
+    string tag = el.tag();
+    return tag == "input" || tag == "textarea" || tag == "select";
+}
+
+// What reports Focus and Blur (host.kama): a button, a form control, or an element with a tab index — what a browser
+// focuses. ⚠️ RmlUi focuses WHATEVER IS PRESSED (every element's `focus` is `auto`), and sends Focus to each element
+// joining the focus chain; reporting those would give a click on a row a Focus the web never has.
+unsafe fn bool focusable(Element el)
+{
+    string tag = el.tag();
+    if (tag == "button" || tag == "input" || tag == "textarea" || tag == "select") { return true; }
+    Optional<string> index = el.attribute(name: "tabindex");
+    match (index) { case Some(value: s): { if (s != "-1") { return true; } } case None: { } };
+    Optional<string> rcss = el.property(name: "tab-index");
+    return match (rcss) { case None: false; case Some(value: s): s == "auto"; };
+}
+
+// The tooltip's owner: the nearest element at or above `el` with a non-empty `title`; a dead element when none has one.
+unsafe fn Element titledOf(Element el)
+{
+    Element at = el;
+    while (at.isLive()) {
+        Optional<string> t = at.attribute(name: "title");
+        bool titled = match (t) { case None: false; case Some(value: s): !s.isEmpty(); };
+        if (titled) { return at; }
+        Optional<Element> up = at.parent();
+        match (up) { case None: { return Element.fromHandle(handle: 0); } case Some(value: p): { at = p; } };
+    }
+    return Element.fromHandle(handle: 0);
+}
+
+unsafe fn string titleOf(Element el)
+{
+    Optional<string> t = el.attribute(name: "title");
+    return match (t) { case None: ""; case Some(value: s): copy s; };
 }
 
 fn bool navKey(int32 code)
@@ -83,11 +201,21 @@ fn UiCommandKind kindOf(CommandKind k)
     };
 }
 
+// The document, and the tooltip's state, are fields: what one document needs, on the value that loaded it. Keep ONE
+// UiContext and pass it by `ref` (a copy taken before a load does not see the new document — as since 0.1.0).
 type value UiContext implements UiHost {
     int32 ready;
     RmlUi lib;
     Context ctx;
     Document doc;
+    Element tip;            // the package's tooltip element in `doc` (host.kama)
+    int32 tipOwner;         // the element whose title it is for (an element handle), 0 for none
+    float64 tipSince;       // when that element began to be hovered, on `lib`'s clock
+    bool tipShown;
+    bool tipQuiet;          // dismissed (a press, a scroll) until another element is hovered
+    float32 pointerX;       // the pointer, from `mouseMove`: where the tooltip goes
+    float32 pointerY;
+    bool scrollMarked;      // a `scrollToEnd` or `scrollIntoView` waits for the next update (`followEnds`)
 
     // Start RmlUi, make a context `width` x `height` framebuffer pixels, and load `fontPath` ("" for none yet) as the
     // first face. A UI that will not start leaves `isOpen()` false, and every method then does nothing.
@@ -97,6 +225,14 @@ type value UiContext implements UiHost {
         this.lib = RmlUi.none();
         this.ctx = Context.fromHandle(handle: 0);
         this.doc = Document.fromHandle(handle: 0);
+        this.tip = Element.fromHandle(handle: 0);
+        this.tipOwner = 0;
+        this.tipSince = 0.0;
+        this.tipShown = false;
+        this.tipQuiet = false;
+        this.pointerX = 0.0;
+        this.pointerY = 0.0;
+        this.scrollMarked = false;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -109,6 +245,14 @@ type value UiContext implements UiHost {
         this.lib = RmlUi.none();
         this.ctx = Context.fromHandle(handle: 0);
         this.doc = Document.fromHandle(handle: 0);
+        this.tip = Element.fromHandle(handle: 0);
+        this.tipOwner = 0;
+        this.tipSince = 0.0;
+        this.tipShown = false;
+        this.tipQuiet = false;
+        this.pointerX = 0.0;
+        this.pointerY = 0.0;
+        this.scrollMarked = false;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -157,6 +301,11 @@ type value UiContext implements UiHost {
         if (this.doc.isLive()) { this.doc.close(); }
         this.doc = Document.fromHandle(handle: 0);
         this.ctx.clearEvents();
+        this.tip = Element.fromHandle(handle: 0);
+        this.tipOwner = 0;
+        this.tipShown = false;
+        this.tipQuiet = false;
+        this.scrollMarked = false;
     }
 
     public unsafe fn bool loadDocument(const ref string path)
@@ -176,14 +325,63 @@ type value UiContext implements UiHost {
         return this.adopt(d: d);
     }
 
+    // A loaded document, made the package's: its draggable elements dressed, the package's own listeners on its root
+    // (`own` reads what they hear), and the tooltip element appended. Then shown.
     unsafe fn bool adopt(Optional<Document> d)
     {
         match (d) {
             case None: { return false; }
             case Some(value: loaded): { this.doc = loaded; }
         };
+        Element root = this.doc.root();
+        this.dress(el: root);
+        string keydown = "keydown";
+        string scroll = "scroll";
+        string dragstart = "dragstart";
+        string dragover = "dragover";
+        string dragout = "dragout";
+        string dragend = "dragend";
+        // Capture: a key reaches its target's listeners after the root's, and a text field may stop it there.
+        Optional<Listener> l1 = root.listen(event: keydown, flags: LISTEN_CAPTURE);
+        Optional<Listener> l2 = root.listen(event: scroll, flags: LISTEN_CAPTURE);
+        Optional<Listener> l3 = root.listen(event: dragstart, flags: LISTEN_BUBBLE);
+        Optional<Listener> l4 = root.listen(event: dragover, flags: LISTEN_BUBBLE);
+        Optional<Listener> l5 = root.listen(event: dragout, flags: LISTEN_BUBBLE);
+        Optional<Listener> l6 = root.listen(event: dragend, flags: LISTEN_BUBBLE);
+        this.makeTip();
         this.doc.show(modal: Modal::None, focus: Focus::Auto);
         return true;
+    }
+
+    // The tooltip element, appended to the document's root: absolute, hidden, and transparent to the pointer, so it
+    // never takes the hover from what it describes. The document styles `.ui-tooltip`.
+    unsafe fn void makeTip()
+    {
+        Element root = this.doc.root();
+        string markup = "<div id='kama-ui-tooltip' class='ui-tooltip' style='position: absolute; pointer-events: none; display: none; z-index: 1000;'></div>";
+        int32 added = root.appendRml(rml: markup);
+        string id = "kama-ui-tooltip";
+        Optional<Element> t = this.doc.byId(id: id);
+        this.tip = match (t) { case None: Element.fromHandle(handle: 0); case Some(value: e): e; };
+        this.tipOwner = 0;
+        this.tipShown = false;
+        this.tipQuiet = false;
+    }
+
+    // `draggable="true"` is the package's one drag markup (host.kama): RmlUi drags what its RCSS `drag` says, so each
+    // such element under `el` gets the inline property. Run over whatever markup is inserted.
+    unsafe fn void dress(Element el)
+    {
+        Optional<string> d = el.attribute(name: "draggable");
+        bool drags = match (d) { case None: false; case Some(value: s): s == "true"; };
+        if (drags) { el.setProperty(name: "drag", value: "drag-drop"); }
+        int32 n = el.childCount();
+        int32 i = 0;
+        while (i < n) {
+            Optional<Element> c = el.child(index: i);
+            match (c) { case None: { } case Some(value: child): { this.dress(el: child); } };
+            i = i + 1;
+        }
     }
 
     // The element a handle names now, re-found after a rewrite (a binding's job), or None.
@@ -201,7 +399,7 @@ type value UiContext implements UiHost {
     public unsafe fn void setInnerRml(int32 handle, const ref string rml)
     {
         Optional<Element> e = this.bound(handle: handle);
-        match (e) { case Some(value: el): { el.setInnerRml(rml: rml); } case None: { } };
+        match (e) { case Some(value: el): { el.setInnerRml(rml: rml); this.dress(el: el); } case None: { } };
     }
 
     public unsafe fn void setSize(int32 width, int32 height)
@@ -222,6 +420,7 @@ type value UiContext implements UiHost {
         this.lib.setTime(seconds: now + 1.0 / 60.0);
         this.ctx.update();
         this.followEnds();
+        this.tooltips();
     }
 
     public unsafe fn void updateAt(float64 seconds)
@@ -230,24 +429,77 @@ type value UiContext implements UiHost {
         this.lib.setTime(seconds: seconds);
         this.ctx.update();
         this.followEnds();
+        this.tooltips();
     }
 
-    // `scrollToEnd` (host.kama) marks; this honours the marks, AFTER the layout pass. ⚠️ NOT AT THE CALL: RmlUi measures
+    // The tooltip (host.kama), from the hover RmlUi keeps and the clock `update` just moved. The owner is the nearest
+    // element at or above the hovered one with a non-empty `title`; a new owner restarts the delay and hides what was
+    // shown. Recreated if a rewrite of the root took it.
+    unsafe fn void tooltips()
+    {
+        if (!this.doc.isLive()) { return; }
+        if (!this.tip.isLive()) { this.makeTip(); }
+        Optional<Element> hover = this.ctx.hoverElement();
+        Element titled = match (hover) { case None: Element.fromHandle(handle: 0); case Some(value: h): titledOf(el: h); };
+        int32 owner = titled.handle();
+        float64 now = this.lib.time();
+        if (owner != this.tipOwner) {
+            this.hideTip();
+            this.tipOwner = owner;
+            this.tipSince = now;
+            this.tipQuiet = false;
+            return;
+        }
+        if (owner == 0 || this.tipShown || this.tipQuiet) { return; }
+        if (now - this.tipSince < UI_TOOLTIP_DELAY) { return; }
+        string title = titleOf(el: titled);
+        this.tip.setText(text: title);
+        float32 left = this.pointerX + cast<float32>(TIP_LEFT);
+        float32 top = this.pointerY + cast<float32>(TIP_TOP);
+        this.tip.setProperty(name: "left", value: "${left}px");
+        this.tip.setProperty(name: "top", value: "${top}px");
+        this.tip.setProperty(name: "display", value: "block");
+        this.tipShown = true;
+    }
+
+    // Hidden, and emptied: a hidden tooltip has no text, on both legs, which is what `elementContent` reads.
+    unsafe fn void hideTip()
+    {
+        if (this.tipShown && this.tip.isLive()) {
+            this.tip.setProperty(name: "display", value: "none");
+            string none = "";
+            this.tip.setText(text: none);
+        }
+        this.tipShown = false;
+    }
+
+    // A press or a scroll: hidden, and kept hidden while the same element is hovered.
+    unsafe fn void dismissTip()
+    {
+        this.hideTip();
+        this.tipQuiet = true;
+    }
+
+    // `scrollToEnd` and `scrollIntoView` (host.kama) mark; this honours the marks, AFTER the layout pass. ⚠️ NOT AT THE CALL: RmlUi measures
     // only in `update`, so `scrollHeight` at the call would be the last layout's — without the line just written — and a
     // log would follow one line behind. The mark is an attribute written quietly: state on RmlUi's side of the seam, as
     // everything a `value` context must remember is. The scroll this makes raises RmlUi's `scroll` event, which no
     // binding listens for, so nothing reaches `pollEvent`.
+    // ⚠️ ONLY WHEN SOMETHING IS MARKED: a query walks the whole document, and a log of thousands of lines would pay
+    // for it every frame.
     unsafe fn void followEnds()
     {
-        if (!this.doc.isLive()) { return; }
+        if (!this.scrollMarked || !this.doc.isLive()) { return; }
+        this.scrollMarked = false;
         Element root = this.doc.root();
         string marked = "[data-kama-ui-end]";
         string mark = "data-kama-ui-end";
         int32 left = 4096;   // more marks than a document has elements cannot happen; a bound, not a budget
-        while (left > 0) {
+        bool more = true;
+        while (more && left > 0) {
             Optional<Element> e = root.query(selector: marked);
             match (e) {
-                case None: { return; }
+                case None: { more = false; }
                 case Some(value: el): {
                     el.removeAttributeQuietly(name: mark);
                     el.setScrollTop(top: el.scrollHeight());
@@ -255,59 +507,82 @@ type value UiContext implements UiHost {
             };
             left = left - 1;
         }
+        string intoMarked = "[data-kama-ui-into-view]";
+        string into = "data-kama-ui-into-view";
+        more = true;
+        while (more && left > 0) {
+            Optional<Element> e = root.query(selector: intoMarked);
+            match (e) {
+                case None: { more = false; }
+                case Some(value: el): {
+                    el.removeAttributeQuietly(name: into);
+                    el.scrollIntoView();
+                }
+            };
+            left = left - 1;
+        }
     }
 
-    // ⚠️ A ROUND TRIP NATIVELY, O(the whole content) per append where the web's is O(the new markup): @kama/rmlui has no
-    // append, so the element's markup is read back (`innerRml`), the new markup added and the whole written again. It
-    // keeps what the markup carries — every attribute, the inline properties RmlUi serializes, a class (an attribute
-    // here, see `setElementClass`) — and the scroll position, which RmlUi keeps on the element itself through a rewrite
-    // (measured: restoring it by hand changed nothing). ⚠️ AND THE BINDINGS INSIDE, AT ONCE: a binding re-finds
-    // its element only when it is next used, and its listeners go back on only then, so a bound row clicked before
-    // anything touched its handle would be deaf — where the web's untouched node never stopped hearing. So the bindings
-    // naming elements inside are listed first (`boundInside`) and re-found right after the write. It cannot keep focus,
-    // hover or a text field's caret inside the element, and a target queued from inside it reads as 0 at the poll.
+    public unsafe fn void scrollIntoView(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        string mark = "data-kama-ui-into-view";
+        string on = "";
+        match (e) { case Some(value: el): { el.setAttributeQuietly(name: mark, value: on); this.scrollMarked = true; } case None: { } };
+    }
+
+    // @kama/rmlui 0.2.0's `appendRml`: only the new markup is parsed, and the children already there — their handles,
+    // listeners and bindings, the scroll offset — are not touched. The new children are dressed for dragging.
     public unsafe fn void appendInnerRml(int32 handle, const ref string rml)
     {
         Optional<Element> e = this.bound(handle: handle);
         match (e) {
             case None: { }
             case Some(value: el): {
-                DynamicArray<int32> inside = DynamicArray.empty();
-                this.boundInside(el: el, into: inside);
-                string before = el.innerRml();
-                string both = "${before}${rml}";
-                el.setInnerRml(rml: both);
-                isize i = 0;
-                while (i < inside.length()) {
-                    Binding b = Binding.fromHandle(handle: inside[i]);
-                    Optional<Element> again = b.element();
+                int32 before = el.childCount();
+                int32 added = el.appendRml(rml: rml);
+                int32 i = before;
+                while (i < before + added) {
+                    Optional<Element> c = el.child(index: i);
+                    match (c) { case None: { } case Some(value: child): { this.dress(el: child); } };
                     i = i + 1;
                 }
             }
         };
     }
 
-    // The bindings naming an element under `el`, by walking it: only an element with an id can have one, and
-    // `bindingOf` says whether it does.
-    unsafe fn void boundInside(Element el, ref DynamicArray<int32> into)
+    public unsafe fn int32 childCount(int32 handle)
     {
-        int32 n = el.childCount();
-        int32 i = 0;
-        while (i < n) {
-            Optional<Element> c = el.child(index: i);
-            match (c) {
-                case None: { }
-                case Some(value: child): {
-                    string id = child.id();
-                    if (!id.isEmpty()) {
-                        Optional<Binding> b = this.doc.bindingOf(element: child);
-                        match (b) { case None: { } case Some(value: x): { into.add(item: x.handle()); } };
-                    }
-                    this.boundInside(el: child, into: into);
-                }
-            };
-            i = i + 1;
-        }
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) { case None: 0; case Some(value: el): el.childCount(); };
+    }
+
+    public unsafe fn int32 removeChildren(int32 handle, int32 from, int32 count)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) { case None: 0; case Some(value: el): el.removeChildren(from: from, count: count); };
+    }
+
+    public unsafe fn string elementContent(int32 handle)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        return match (e) {
+            case None: "";
+            case Some(value: el): {
+                if (isControl(el: el)) { return ""; }
+                := el.text();
+            }
+        };
+    }
+
+    // `Element.setText` escapes as it writes: the text is never parsed.
+    public unsafe fn void setElementContent(int32 handle, const ref string text)
+    {
+        Optional<Element> e = this.bound(handle: handle);
+        match (e) {
+            case None: { }
+            case Some(value: el): { if (!isControl(el: el)) { el.setText(text: text); } }
+        };
     }
 
     // From the last layout, as every size natively is — or true while a `scrollToEnd` waits for the next update, so a
@@ -328,7 +603,7 @@ type value UiContext implements UiHost {
         Optional<Element> e = this.bound(handle: handle);
         string mark = "data-kama-ui-end";
         string on = "";
-        match (e) { case Some(value: el): { el.setAttributeQuietly(name: mark, value: on); } case None: { } };
+        match (e) { case Some(value: el): { el.setAttributeQuietly(name: mark, value: on); this.scrollMarked = true; } case None: { } };
     }
 
     public unsafe fn void render()
@@ -389,39 +664,67 @@ type value UiContext implements UiHost {
     public unsafe fn void mouseMove(float32 x, float32 y)
     {
         if (this.ready == 0) { return; }
+        this.pointerX = x;
+        this.pointerY = y;
         this.ctx.mouseMove(x: x, y: y, mods: MOD_NONE);
     }
 
-    public unsafe fn void mouseButton(int32 button, bool down)
+    public unsafe fn void mouseButton(int32 button, bool down, int32 mods)
     {
         if (this.ready == 0) { return; }
-        this.ctx.mouseButton(button: button, down: down, mods: MOD_NONE);
+        if (down) { this.dismissTip(); }
+        this.ctx.mouseButton(button: button, down: down, mods: rmlMods(mods: mods));
     }
 
     public unsafe fn void mouseWheel(float32 delta)
     {
         if (this.ready == 0) { return; }
+        this.dismissTip();
         this.ctx.mouseWheel(dx: 0.0, dy: delta, mods: MOD_NONE);
     }
 
-    public unsafe fn void key(int32 code, bool down, bool shift)
+    // ⚠️ THE KEY GOES TO RMLUI FIRST, ALWAYS (CHANGED in 0.3.0; the first-press rule below used to return before it):
+    // that is how the document hears it — a `Key` event — on the press that also lands the ring.
+    public unsafe fn void key(int32 code, bool down, int32 mods)
     {
         if (this.ready == 0) { return; }
         int32 k = rmlKey(code: code);
         if (k == 0) { return; }
-        int32 mods = MOD_NONE;
-        if (shift) { mods = MOD_SHIFT; }
+        bool held = this.focusHeld();
+        this.ctx.key(key: k, down: down, mods: rmlMods(mods: mods));
 
         // Nothing to move FROM (the document itself holds focus, after a click on the background, or nothing does)
-        // — put the ring on the first tab element and let this press be that, rather than lose it.
-        if (down && navKey(code: code) && !this.focusHeld()) {
-            Optional<Element> first = this.doc.nextTab(from: this.doc.root(), forward: !shift, wrap: true);
+        // — put the ring on the first tab element and let this press be that, rather than lose it. RmlUi's own TAB from
+        // the document has already done so; an arrow has not.
+        if (down && navKey(code: code) && !held && !this.focusHeld()) {
+            bool back = (mods & UI_MOD_SHIFT) != 0;
+            Optional<Element> first = this.doc.nextTab(from: this.doc.root(), forward: !back, wrap: true);
             match (first) {
-                case Some(value: f): { f.focus(visible: true); return; }
+                case Some(value: f): { f.focus(visible: true); }
                 case None: { }
             };
         }
-        this.ctx.key(key: k, down: down, mods: mods);
+    }
+
+    // Natively there is no platform default to prevent: the program owns its window (host.kama).
+    public unsafe fn void claimKey(int32 key, int32 mods) { }
+
+    public unsafe fn void copyText(const ref string text)
+    {
+        if (this.ready == 0) { return; }
+        this.lib.copyText(text: text);
+    }
+
+    public unsafe fn void provideClipboard(const ref string text)
+    {
+        if (this.ready == 0) { return; }
+        this.lib.provideClipboard(text: text);
+    }
+
+    public unsafe fn Optional<string> takeClipboardWrite()
+    {
+        if (this.ready == 0) { return Optional::None; }
+        return this.lib.takeClipboardWrite();
     }
 
     // ⚠️ THE DOCUMENT ITSELF IS A FOCUS TARGET AND MUST NOT COUNT: with nothing focused RmlUi reports the document, and
@@ -451,10 +754,21 @@ type value UiContext implements UiHost {
             case None: 0;
             case Some(value: binding): {
                 // Idempotent per (event, flags), so binding twice listens once — and a click is never reported twice.
+                // ⚠️ FOCUS AND BLUR IN THE CAPTURE PHASE: RmlUi's do not bubble (it sends one to every element joining or
+                // leaving the focus chain instead), so a bound container hears its children's only on the way down.
+                // The web leg listens the same way, so both deliver them ancestors first.
                 string click = "click";
                 string change = "change";
+                string dblclick = "dblclick";
+                string dragdrop = "dragdrop";
+                string focus = "focus";
+                string blur = "blur";
                 binding.listen(event: click, flags: LISTEN_BUBBLE);
                 binding.listen(event: change, flags: LISTEN_BUBBLE);
+                binding.listen(event: dblclick, flags: LISTEN_BUBBLE);
+                binding.listen(event: dragdrop, flags: LISTEN_BUBBLE);
+                binding.listen(event: focus, flags: LISTEN_CAPTURE);
+                binding.listen(event: blur, flags: LISTEN_CAPTURE);
                 := binding.handle();
             }
         };
@@ -515,16 +829,7 @@ type value UiContext implements UiHost {
     public unsafe fn void setElementClass(int32 handle, const ref string name, bool on)
     {
         Optional<Element> e = this.bound(handle: handle);
-        match (e) {
-            case None: { }
-            case Some(value: el): {
-                string attr = "class";
-                Optional<string> current = el.attribute(name: attr);
-                string list = match (current) { case None: ""; case Some(value: s): copy s; };
-                string next = toggled(list: list, name: name, on: on);
-                if (next != list) { el.setAttributeQuietly(name: attr, value: next); }
-            }
-        };
+        match (e) { case None: { } case Some(value: el): { classOn(el: el, name: name, on: on); } };
     }
 
     public unsafe fn bool setElementProperty(int32 handle, const ref string name, const ref string value)
@@ -545,6 +850,7 @@ type value UiContext implements UiHost {
             case Some(value: el): {
                 if (name == "value" && el.setValue(value: value, quiet: true)) { return; }
                 el.setAttributeQuietly(name: name, value: value);
+                if (name == "draggable") { el.removeProperty(name: "drag"); this.dress(el: el); }
             }
         };
     }
@@ -559,6 +865,7 @@ type value UiContext implements UiHost {
                 string none = "";
                 if (name == "value" && el.setValue(value: none, quiet: true)) { return; }
                 el.removeAttributeQuietly(name: name);
+                if (name == "draggable") { el.removeProperty(name: "drag"); }
             }
         };
     }
@@ -588,7 +895,8 @@ type value UiContext implements UiHost {
         match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
     }
 
-    // Clicks and changes heard through bindings; anything else in the queue is skipped.
+    // What the bindings heard, translated (`heard`), and what the package's own listeners on the root heard (`own`):
+    // a key becomes a `Key` event, the rest is the drag's classes and the tooltip's dismissal. Anything else is skipped.
     public unsafe fn Optional<UiEvent> pollEvent()
     {
         if (this.ready == 0) { return Optional::None; }
@@ -597,21 +905,141 @@ type value UiContext implements UiHost {
             match (next) {
                 case None: { return Optional::None; }
                 case Some(value: ev): {
-                    if (!ev.binding.isNone()) {
-                        bool click = match (ev.type) { case Click: true; case _: false; };
-                        bool change = match (ev.type) { case Change: true; case _: false; };
-                        if (change && this.notAnEdit(ev: ev)) { change = false; }
-                        if (click || change) {
-                            UiEventKind kind = UiEventKind::Change;
-                            if (click) { kind = UiEventKind::Click; }
-                            int32 target = this.targetOf(ev: ev);
-                            return Optional::Some(value: UiEvent.make(kind: kind, element: ev.binding.handle(), target: target));
-                        }
-                    }
+                    Optional<UiEvent> found = Optional::None;
+                    if (ev.binding.isNone()) { found = this.own(ev: ev); } else { found = this.heard(ev: ev); }
+                    match (found) { case Some(value: u): { return Optional::Some(value: u); } case None: { } };
                 }
             };
         }
         return Optional::None;
+    }
+
+    unsafe fn Optional<UiEvent> heard(Event ev)
+    {
+        int32 element = ev.binding.handle();
+        int32 mods = uiMods(m: this.lib.eventModifiers());
+        return match (ev.type) {
+            case Click: Optional::Some(value: UiEvent.make(kind: UiEventKind::Click, element: element,
+                                                            target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods));
+            case Dblclick: Optional::Some(value: UiEvent.make(kind: UiEventKind::DoubleClick, element: element,
+                                                               target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods));
+            case Change: {
+                if (this.notAnEdit(ev: ev)) { return Optional::None; }
+                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Change, element: element,
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+            }
+            case Focus: {
+                if (!focusable(el: ev.target)) { return Optional::None; }
+                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Focus, element: element,
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+            }
+            case Blur: {
+                if (!focusable(el: ev.target)) { return Optional::None; }
+                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Blur, element: element,
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+            }
+            case Dragdrop: {
+                string dragName = "drag_element";
+                Optional<Element> dragged = this.lib.eventElement(name: dragName);
+                int32 source = match (dragged) { case None: 0; case Some(value: d): this.named(el: d); };
+                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Drop, element: element,
+                                                       target: this.targetOf(ev: ev), source: source, key: 0, mods: mods));
+            }
+            case _: Optional::None;
+        };
+    }
+
+    // The package's own listeners on the document's root (`adopt`).
+    unsafe fn Optional<UiEvent> own(Event ev)
+    {
+        string dragName = "drag_element";
+        string dragging = "ui-dragging";
+        string dropTarget = "ui-drop-target";
+        match (ev.type) {
+            case Keydown: {
+                string identifier = "key_identifier";
+                int32 key = uiKey(k: this.lib.eventInt(name: identifier, fallback: -1));
+                int32 mods = uiMods(m: this.lib.eventModifiers());
+                if (!reported(key: key, mods: mods)) { return Optional::None; }
+                return Optional::Some(value: UiEvent.make(kind: UiEventKind::Key, element: 0,
+                                                          target: this.targetOf(ev: ev), source: 0, key: key, mods: mods));
+            }
+            case Scroll: { this.dismissTip(); }
+            case Dragstart: {
+                Optional<Element> dragged = this.lib.eventElement(name: dragName);
+                match (dragged) { case None: { } case Some(value: d): { classOn(el: d, name: dragging, on: true); } };
+            }
+            case Dragover: {
+                Element over = this.withId(el: ev.target);
+                if (over.isLive()) {
+                    this.clearClass(name: dropTarget, except: over);
+                    classOn(el: over, name: dropTarget, on: true);
+                }
+            }
+            case Dragout: {
+                // Left for good only if the pointer is outside it now: moving between the parts of one row raises a
+                // dragout on the part it leaves, which must not take the row's class off.
+                Element left = this.withId(el: ev.target);
+                if (left.isLive()) {
+                    Rect r = left.rect(area: BoxArea::Border);
+                    bool inside = this.pointerX >= r.x && this.pointerX < r.x + r.width &&
+                                  this.pointerY >= r.y && this.pointerY < r.y + r.height;
+                    if (!inside) { classOn(el: left, name: dropTarget, on: false); }
+                }
+            }
+            case Dragend: {
+                Optional<Element> dragged = this.lib.eventElement(name: dragName);
+                match (dragged) { case None: { } case Some(value: d): { classOn(el: d, name: dragging, on: false); } };
+                this.clearClass(name: dragging, except: Element.fromHandle(handle: 0));
+                this.clearClass(name: dropTarget, except: Element.fromHandle(handle: 0));
+            }
+            case _: { }
+        };
+        return Optional::None;
+    }
+
+    // Take a class off every element of the document that has it, but `except`.
+    unsafe fn void clearClass(const ref string name, Element except)
+    {
+        if (!this.doc.isLive()) { return; }
+        Element root = this.doc.root();
+        string selector = ".${name}";
+        int32 left = 256;
+        while (left > 0) {
+            Optional<Element> e = root.query(selector: selector);
+            match (e) {
+                case None: { return; }
+                case Some(value: el): {
+                    if (el.same(other: except)) { return; }
+                    classOn(el: el, name: name, on: false);
+                }
+            };
+            left = left - 1;
+        }
+    }
+
+    // The nearest element at or above `el` with an id, inside the document; a dead element when there is none.
+    unsafe fn Element withId(Element el)
+    {
+        Element at = el;
+        Element root = this.doc.root();
+        while (at.isLive()) {
+            string id = at.id();
+            if (!id.isEmpty()) { return at; }
+            if (at.same(other: root)) { return Element.fromHandle(handle: 0); }
+            Optional<Element> up = at.parent();
+            match (up) { case None: { return Element.fromHandle(handle: 0); } case Some(value: p): { at = p; } };
+        }
+        return Element.fromHandle(handle: 0);
+    }
+
+    // `withId`, as a handle — a Drop's `source`.
+    unsafe fn int32 named(Element el)
+    {
+        Element at = this.withId(el: el);
+        if (!at.isLive()) { return 0; }
+        string id = at.id();
+        return this.findElement(elementId: id);
     }
 
     // ⚠️ ONE CHANGE PER EDIT (host.kama), the count the web leg gets by hearing `input` from a text field, a textarea and

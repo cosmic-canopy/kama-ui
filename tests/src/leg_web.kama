@@ -1,18 +1,30 @@
 file @compileFor(ARCH_WASM32);
-// The web leg's half of the suite: a click injected the way a person's arrives — the browser's own hit test
-// (document.elementFromPoint) and a bubbling MouseEvent, from tests/web/kama_ui_test.js — a wheel as the browser
-// applies one, what a rewrite or a new document must let go of, a page's stage, and the verdict written where a
-// headless browser's --dump-dom reads it.
+// The web leg's half of the suite: input injected the way a person's arrives — the browser's own hit test
+// (document.elementFromPoint) and the events a browser fires, in its order, from tests/web/kama_ui_test.js (a
+// synthetic event performs no default action, so the helper does the one that matters: a press focusing what it hits)
+// — a wheel as the browser applies one, what a rewrite or a new document must let go of, a page's stage, a claimed key,
+// the clipboard, titles, and the verdict written where a headless browser's --dump-dom reads it.
 
 import {
     Tally, check, section, Seen, collect, changesOn,
     core::println,
-    ui::UiContext, ui::UiRect,
+    ui::UiContext, ui::UiRect, ui::UiEvent, ui::UiEventKind,
+    ui::UI_KEY_S, ui::UI_KEY_P, ui::UI_MOD_CTRL,
 };
-export { fontPath, injectClick, injectScroll, typeInto, pick, legTests, pageLegTests, report };
+export {
+    fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
+    typeInto, pick, legTests, pageLegTests, report,
+};
 
 extern "kama_ui_test.h";
-extern fn int32 kama_ui_test_click_at(float32 x, float32 y);
+extern fn int32 kama_ui_test_press_at(float32 x, float32 y, int32 mods, int32 clicks);
+extern fn int32 kama_ui_test_key(int32 code, int32 mods, int32 meta);
+extern fn int32 kama_ui_test_hover_at(float32 x, float32 y);
+extern fn int32 kama_ui_test_drag_begin(float32 from_x, float32 from_y, float32 to_x, float32 to_y);
+extern fn int32 kama_ui_test_drag_end();
+extern fn void  kama_ui_test_spy_clipboard();
+extern fn int32 kama_ui_test_copied_is(UnsafeConstPtr<cchar> text);
+extern fn int32 kama_ui_test_has_attr(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> attr);
 extern fn void  kama_ui_test_report(int32 run, int32 failed);
 extern fn int32 kama_ui_test_attr_ends(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> attr, UnsafeConstPtr<cchar> suffix);
 extern fn int32 kama_ui_test_scroll_at(float32 x, float32 y, float32 notches);
@@ -31,7 +43,48 @@ fn string fontPath() { return ""; }
 
 unsafe fn bool injectClick(ref UiContext ui, float32 x, float32 y)
 {
-    return kama_ui_test_click_at(x: x, y: y) != 0;
+    return kama_ui_test_press_at(x: x, y: y, mods: 0, clicks: 1) != 0;
+}
+
+unsafe fn bool injectModClick(ref UiContext ui, float32 x, float32 y, int32 mods)
+{
+    return kama_ui_test_press_at(x: x, y: y, mods: mods, clicks: 1) != 0;
+}
+
+unsafe fn bool injectDoubleClick(ref UiContext ui, float32 x, float32 y)
+{
+    return kama_ui_test_press_at(x: x, y: y, mods: 0, clicks: 2) != 0;
+}
+
+// The browser's keydown and keyup at the focused element (which a synthetic event does not act on), then the same key
+// forwarded to `key`, as a page's platform layer forwards it for the ring.
+unsafe fn void injectKey(ref UiContext ui, int32 code, int32 mods)
+{
+    kama_ui_test_key(code: code, mods: mods, meta: 0);
+    ui.key(code: code, down: true, mods: mods);
+    ui.key(code: code, down: false, mods: mods);
+}
+
+unsafe fn void injectHover(ref UiContext ui, float32 x, float32 y) { kama_ui_test_hover_at(x: x, y: y); }
+
+unsafe fn void dragBegin(ref UiContext ui, float32 fromX, float32 fromY, float32 toX, float32 toY)
+{
+    kama_ui_test_drag_begin(from_x: fromX, from_y: fromY, to_x: toX, to_y: toY);
+}
+
+unsafe fn void dragEnd(ref UiContext ui) { kama_ui_test_drag_end(); }
+
+unsafe fn bool keyPrevented(int32 code, int32 mods, int32 meta)
+{
+    return kama_ui_test_key(code: code, mods: mods, meta: meta) != 0;
+}
+
+unsafe fn void spyClipboard() { kama_ui_test_spy_clipboard(); }
+unsafe fn bool copiedIs(const ref string text) { return kama_ui_test_copied_is(text: text.cstr()) != 0; }
+
+unsafe fn bool hasAttr(const ref string id, const ref string attr)
+{
+    return kama_ui_test_has_attr(id: id.cstr(), attr: attr.cstr()) != 0;
 }
 
 unsafe fn bool attrEnds(const ref string id, const ref string attr, const ref string suffix)
@@ -80,6 +133,24 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
           what: "setImageRewrite turned the document's /img/dot.pam into /img/dot.webp before the browser fetched it");
     check(t: t, ok: attrEnds(id: "first", attr: "id", suffix: "first"), what: "the bound button is an element with its id");
 
+    section(what: "web: a claimed key's default is prevented, as it goes down");
+    check(t: t, ok: keyPrevented(code: UI_KEY_S, mods: UI_MOD_CTRL, meta: 0), what: "Ctrl+S, claimed: prevented");
+    check(t: t, ok: !keyPrevented(code: UI_KEY_P, mods: UI_MOD_CTRL, meta: 0), what: "Ctrl+P, unclaimed: not");
+    collect(ui: ui);
+    check(t: t, ok: keyPrevented(code: UI_KEY_S, mods: 0, meta: 1), what: "Cmd+S is Ctrl+S: prevented too");
+    Optional<UiEvent> cmd = ui.pollEvent();
+    bool folded = match (cmd) { case None: false; case Some(value: e): e.key == UI_KEY_S && e.mods == UI_MOD_CTRL; };
+    check(t: t, ok: folded, what: "...and its Key event says Ctrl");
+    collect(ui: ui);
+
+    section(what: "web: the clipboard is the browser's");
+    spyClipboard();
+    ui.copyText(text: "a copy");
+    check(t: t, ok: copiedIs(text: "a copy"), what: "copyText hands the text to navigator.clipboard");
+    Optional<string> none = ui.takeClipboardWrite();
+    bool empty = match (none) { case None: true; case Some(value: s): false; };
+    check(t: t, ok: empty, what: "...and nothing is left for the program to take");
+
     section(what: "web: attributes");
     int32 pic = ui.bindElement(elementId: "pic");
     ui.setElementAttribute(handle: pic, name: "src", value: "/img/dot2.pam");
@@ -116,6 +187,10 @@ unsafe fn bool selectionHolds(const ref string id) { return kama_ui_test_selecti
 
 fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
 {
+    section(what: "web: a title is the package's tooltip, never the browser's");
+    check(t: t, ok: !hasAttr(id: "bar", attr: "title") && hasAttr(id: "bar", attr: "data-kama-ui-title"),
+          what: "the bar's title is held as data-kama-ui-title, so the browser shows no popup of its own");
+
     section(what: "web: an append leaves a person's selection alone");
     int32 log = ui.findElement(elementId: "log");
     check(t: t, ok: selectText(id: "newest"), what: "a line's text is selected");

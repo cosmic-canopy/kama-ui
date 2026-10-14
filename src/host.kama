@@ -3,8 +3,17 @@
 // Three additions are marked below (`loadDocumentText`, `setImageRewrite`, and `provideImage` taking a view rather than
 // a raw pointer). 0.2.0's are marked with their version: `elementId`, `setElementAttribute`, `removeElementAttribute`,
 // `elementChecked`, `findElement`, an event's `target`, one change per edit, `setInnerRml` releasing what it replaces,
-// and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively; 0.2.2
-// `isScrolledToEnd` and `appendInnerRml`.
+// and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively. 0.3.0's are
+// marked too: what the rest of a tool page needs — appending to and trimming a list, keys and shortcuts, focus, double
+// clicks, drag and drop, tooltips, the clipboard, and plain text. (0.2.2 was never published; 0.3.0 carries it.)
+//
+// WHAT THE PROGRAM DOES NATIVELY, because it owns the window (the web's browser does all of it itself):
+//   - forward EVERY key it does not keep for itself to `key`, with its modifiers (Cmd as UI_MOD_CTRL), and every
+//     character to `typeChar` — `key` is how shortcuts, focus and a field's Ctrl+A/C/X/V reach the document;
+//   - pass the modifiers held to `mouseButton`, so a Ctrl+click reports them;
+//   - call `updateAt` every frame with a monotonic clock: double clicks and the tooltip's delay are measured on it;
+//   - bridge the clipboard: hand the OS clipboard's text to `provideClipboard` before forwarding a paste (or every
+//     frame), and put every `takeClipboardWrite` on the OS clipboard.
 //
 // TWO WAYS TO OPEN, ONE CONTRACT. `UiContext.open(width, height, fontPath)` is a STAGE: a fixed virtual resolution the
 // program letterboxes and scales (a game's menus). `UiContext.openPage(width, height, fontPath)` (0.2.0) is a PAGE: the
@@ -60,7 +69,30 @@ type contract UiHost for value {
     // it is a no-op (false, 0, "", an empty rect), never a crash, until an element carries its id again. Its first use
     // after that (`bindElement`, or any call) names the new element with the same handle and listens there again. A
     // handle keeps its id (`elementId`) while the document lives.
+    //
+    // A `<select>`'s content is its options, on both legs (0.3.0): a rewrite replaces them, and its value settles on the
+    // option marked `selected`, else the first, with no change event.
     fn void setInnerRml(int32 handle, const ref string rml);
+
+    // ADDED (0.3.0, from the unpublished 0.2.2): add markup after the element's children WITHOUT REWRITING THEM — a log's
+    // new line. It releases no binding: handles inside stay valid, listeners and all, and the scroll position is kept.
+    // The cost is the new markup's on both legs, and the existing nodes are untouched (on the web a person's text
+    // selection in them survives). Text a person typed still goes through `ui::uidoc::escapeText` first, as for
+    // `setInnerRml`. On a `<select>` it adds options.
+    fn void appendInnerRml(int32 handle, const ref string rml);
+
+    // ADDED (0.3.0): how many children an element has — its child elements and its runs of text (blank text between
+    // tags is not one) — and removing `count` of them from index `from` on (clamped to what is there), which returns how
+    // many went. A log drops its oldest lines with `removeChildren(handle, 0, n)`, without a rewrite. What is removed
+    // is released as by `setInnerRml`. 0 for an unknown handle. A `<select>`'s children are its options.
+    fn int32 childCount(int32 handle);
+    fn int32 removeChildren(int32 handle, int32 from, int32 count);
+
+    // ADDED (0.3.0): an element's TEXT — every text run inside it, in order, markup ignored — and replacing its children
+    // with one run of plain text, which is never parsed (a name a person typed needs no `escapeText` here). For a label,
+    // a cell, a status line. Not for a form control, which ignores both (its text is `elementText`'s).
+    fn string elementContent(int32 handle);
+    fn void setElementContent(int32 handle, const ref string text);
 
     // Hand over the pixels for one `<img>` a document will ask for. PIXELS, NOT A PATH: the backend decodes no image
     // format, and on the web nothing should read the file at all (the browser fetches its own copy). RGBA8,
@@ -91,7 +123,16 @@ type contract UiHost for value {
 
     // Advance layout and animations, then rebuild the command list. Once per frame, in this order. `update` steps the
     // clock a fixed 1/60 s (deterministic, for headless runs); `updateAt` takes a monotonic clock in seconds, so hover
-    // transitions and the caret's blink run in real time. Both no-ops on the web, which lays out and paints itself.
+    // transitions and the caret's blink run in real time. CHANGED (0.3.0): THE CLOCK IS THE TOOLTIP'S ON BOTH LEGS, and
+    // natively a double click's too, so call one of them every frame on the web as well (where they otherwise do
+    // nothing: the browser lays out and paints itself).
+    //
+    // TOOLTIPS (0.3.0), the same on both legs: an element with a `title` attribute, hovered for UI_TOOLTIP_DELAY (half a second) of
+    // this clock without a press, shows its title in the package's tooltip element, `#kama-ui-tooltip` with the class
+    // `ui-tooltip`, placed 12 px right of and 16 px below the pointer (absolute, `pointer-events: none`). The document
+    // styles `.ui-tooltip` (colour, padding, font). It hides when the pointer leaves the element, on a press, and on a
+    // scroll, and stays hidden until another element is hovered. On the web the browser's own `title` popup never
+    // appears: the attribute is held as `data-kama-ui-title` there, so a `[title]` rule matches natively only.
     fn void update();
     fn void updateAt(float64 seconds);
     fn void render();
@@ -111,24 +152,39 @@ type contract UiHost for value {
     // The pointer, in framebuffer pixels. Buttons: 0 left, 1 right, 2 middle. The wheel in NOTCHES, positive down.
     // ⚠️ THE POINTER POSITION DECIDES WHAT SCROLLS: feed the cursor before the wheel. All three are no-ops on the web,
     // where the browser hit-tests, hovers and scrolls from the page's own pointer events (forwarding a second copy would
-    // scroll twice).
+    // scroll twice). CHANGED (0.3.0): a button carries the UI_MOD_* held, which a Click, a DoubleClick and a Drop report.
+    //
+    // DRAG AND DROP (0.3.0), one markup on both legs: an element with `draggable="true"` can be dragged — natively the
+    // package gives it RCSS `drag: drag-drop` (it stays put while the pointer drags), on the web it is HTML5's own
+    // attribute. Dropped on any element of the document, it raises `Drop` there, heard by the bound element or any bound
+    // ancestor: `target` names the element dropped on (never the dragged one or anything inside it), `source` the
+    // dragged one. During the drag the dragged element has the class `ui-dragging` and the element under the pointer
+    // (named as a target is: the nearest with an id) has `ui-drop-target`, for the document to style. Natively the
+    // classes follow at each `pollEvent`.
     fn void mouseMove(float32 x, float32 y);
-    fn void mouseButton(int32 button, bool down);
+    fn void mouseButton(int32 button, bool down, int32 mods);
     fn void mouseWheel(float32 delta);
 
-    // ---- the keyboard, which is a focus ring and a caret ----
+    // ---- the keyboard, which is a focus ring, a caret and shortcuts ----
     //
-    // `code` is a UI_KEY_* (GLFW's numbering); the subset is in types.kama and anything else is dropped. The PROGRAM
-    // gets every key first and forwards this subset — so a rebind screen or a game verb reading raw keys never competes
-    // with the document. TAB walks the focusable elements, the arrows follow each element's `nav-*` (natively) or document
-    // order (web), and ENTER CLICKS the focused element — so it arrives at `pollEvent` as an ordinary click and no
-    // screen's handler changes.
+    // `code` is a UI_KEY_* (GLFW's numbering, types.kama's table; anything else is dropped), `mods` the UI_MOD_* held
+    // (CHANGED in 0.3.0: it was `bool shift`). The PROGRAM gets every key first. TAB walks the focusable elements, the
+    // arrows follow each element's `nav-*` (natively) or document order (web), and ENTER CLICKS the focused element — so
+    // it arrives at `pollEvent` as an ordinary click and no screen's handler changes.
+    //
+    // NATIVELY, forward every key the program does not keep for itself: the document hears it (a `Key` event, Ctrl+A/C/
+    // X/V in a text field). ON THE WEB the browser hears its own keys — `Key` events come from it, not from here — and
+    // this moves the focus ring only, for a page that swallows the keys (preventDefault) before the DOM can act on them,
+    // which a game does so SPACE and the arrows do not scroll the page; releases are dropped there.
     //
     // ⚠️ A NAVIGATION KEY WITH NOTHING FOCUSED LANDS ON THE FIRST FOCUSABLE ELEMENT rather than being lost, on both legs.
-    //
-    // ⚠️ ON THE WEB this assumes the page swallows the keys (preventDefault) before the DOM can act on them — which a game
-    // does so SPACE and the arrows do not scroll the page — and moves the focus itself; releases are dropped there.
-    fn void key(int32 code, bool down, bool shift);
+    fn void key(int32 code, bool down, int32 mods);
+
+    // ADDED (0.3.0): a shortcut the program owns — `UI_KEY_S` with `UI_MOD_CTRL` — is not the platform's. On the web the
+    // browser's default for that exact combination (Ctrl+S's save dialog, Ctrl+P's print) is prevented as the key goes
+    // down, which only a listener inside the page can do; its `Key` event still arrives. Natively there is no default to
+    // prevent — the program owns its window — so this records nothing and changes nothing. For the life of the context.
+    fn void claimKey(int32 key, int32 mods);
 
     // Is the focus ring on a control the ring can reach? FALSE when nothing is focused, when only the document itself
     // is (RmlUi) or `<body>` is (a browser), and when no document is up. What lets ONE button mean both "press this" (the
@@ -200,14 +256,23 @@ type contract UiHost for value {
     //     if (follow) { ui.scrollToEnd(handle: log); }
     fn bool isScrolledToEnd(int32 handle);
 
-    // ADDED (0.2.2): add markup after the element's children without rewriting them — a log's new line. Unlike
-    // `setInnerRml` it releases no binding: handles inside stay valid, listeners and all, and the scroll position is
-    // kept. On the web the existing nodes are untouched (a person's text selection in them survives) and the cost is
-    // the new markup's. ⚠️ NATIVELY IT IS A ROUND TRIP, O(the whole content) per append: @kama/rmlui has no append, so
-    // the element's markup is read back and written again with the new markup. Attributes, inline properties and
-    // classes survive it; focus, hover and a caret inside the element do not. Text a person typed still goes through
-    // `ui::uidoc::escapeText` first, as for `setInnerRml`.
-    fn void appendInnerRml(int32 handle, const ref string rml);
+    // ---- the clipboard (0.3.0) ----
+    //
+    // `copyText` puts text on the clipboard — a Copy button. On the web the browser's clipboard takes it
+    // (`navigator.clipboard`, which a page may need permission or a person's gesture for). Natively the clipboard is
+    // PULLED: RmlUi's text fields copy and cut (Ctrl+C, Ctrl+X) into it and paste (Ctrl+V) from it, and nothing reaches
+    // the OS by itself. So the program hands the OS clipboard's text to `provideClipboard` before it forwards a paste (or
+    // every frame), and puts every `takeClipboardWrite` (each copy, cut or `copyText`, oldest first; None when there are
+    // none) on the OS clipboard. On the web the browser does both itself: `provideClipboard` is a no-op and
+    // `takeClipboardWrite` always None.
+    fn void copyText(const ref string text);
+    fn void provideClipboard(const ref string text);
+    fn Optional<string> takeClipboardWrite();
+
+    // ADDED (0.3.0): scroll the element's scrollable ancestors so its top is at theirs (or as near as their content
+    // allows) — a selected row brought into view. Like `scrollToEnd`: at once on the web, natively at the next update,
+    // after the layout pass has placed what was just written.
+    fn void scrollIntoView(int32 handle);
 
     // A bound text control's value, and setting it. ⚠️ NO CHANGE EVENT EITHER WAY, ON BOTH LEGS (nor for
     // `setElementValue`): a program writing state into a control is not a person editing it, and only a person's edit
@@ -218,12 +283,22 @@ type contract UiHost for value {
     fn void setElementText(int32 handle, const ref string text);
 
     // Pop one event, or None when the queue is drained. POLLED, never pushed: drain it once per frame, as input is.
-    // Clicks and changes on bound elements. CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
+    // Clicks and changes on bound elements — and since 0.3.0 double clicks, focus and blur, drops, and the document's
+    // keys (types.kama, `UiEventKind`). The same events arrive in the same order on both legs:
+    //   - a click is Click; two presses within half a second are Click, DoubleClick, Click;
+    //   - a key is Key, heard by the document (`element` 0, `target` the focused element), for every key of the table
+    //     that types no character, and for a letter or a digit only with Ctrl or Alt held (a shortcut);
+    //   - focus moving is Blur on what had it, then Focus on what has it, for a button, a form control or an element
+    //     with a tab index (natively RmlUi focuses whatever is pressed; nothing else is reported). ⚠️ They do not bubble
+    //     in RmlUi, so they reach a bound element's ANCESTORS FIRST, outermost first, and then the element: on both legs;
+    //   - a Ctrl+click is a Click with `mods` UI_MOD_CTRL.
+    // CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
     // every kind of control — each character typed into a text field or a textarea, each step of a range (live, as a
     // slider previews), each toggle of a checkbox, each choice of a radio or an option. A commit is no edit: ENTER in a
     // text field, a field losing focus, a slider let go, and the radio a choice unchecks raise none. Neither does a
     // movement that changes nothing: a range stepped past either end, or dragged within one step (CHANGED in 0.2.1:
-    // natively RmlUi raised one for each; @kama/rmlui 0.1.1 drops them). ⚠️ EVENTS BUBBLE: a bound container also hears its children's clicks, so one
+    // natively RmlUi raised one for each; @kama/rmlui 0.1.1 drops them). ⚠️ EVENTS BUBBLE: a bound container also hears
+    // its children's clicks, so one
     // press can be two events (the button's, then the container's) — on both legs. Each names its `target` (0.2.0):
     // the nearest element with an id where it happened, so one binding on a container is enough to tell its rows
     // apart. ⚠️ POLL BEFORE YOU REWRITE: a target a `setInnerRml` destroyed in between reads as 0.

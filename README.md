@@ -20,9 +20,12 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 
 - documents from a file and from text, on a scaled stage or as a page that fills the window;
 - bindings by id that survive rewrites, and let go of what a rewrite replaced;
-- clicks and changes, polled, each naming where it happened;
+- markup appended and children removed in place;
+- events, polled, each naming where it happened: clicks, changes, double clicks, keys, focus and blur, drops;
 - a focus ring driven by TAB, the arrows and ENTER;
-- quiet writes into controls, classes, attributes and inline properties;
+- tooltips from `title`, and drag and drop from `draggable`;
+- quiet writes into controls, classes, attributes, inline properties and plain text;
+- a clipboard the program bridges;
 - recorded draw commands and textures.
 
 ## The contract
@@ -31,14 +34,15 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 
 | group | methods |
 |---|---|
-| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` (releases what it replaces), `appendInnerRml(handle, rml)` (keeps it) |
+| documents | `loadDocument(path)`, `loadDocumentText(rml)`, `closeDocument()`, `setInnerRml(handle, rml)` (releases what it replaces), `appendInnerRml(handle, rml)` (keeps it), `childCount(h)`, `removeChildren(h, from, count)` |
 | assets | `loadFont(path, fallback)`, `provideImage(name, rgba: ConstView<uint8>, w, h)`, `setImageRewrite(nativeExt, webExt)` |
 | frame | `setSize`, `setViewport(offsetX, offsetY, scale, visible)`, `setDpRatio`, `update()`, `updateAt(seconds)`, `render()` |
 | drawing (native) | `commandCount`, `command(i)` → `UiCommand` (`kind`, vertices, indices, texture, translation, scissor, transform), `textureCount`, `texture(h)`, `textureGeneration(h)` |
-| pointer (native) | `mouseMove`, `mouseButton`, `mouseWheel` |
-| keyboard | `key(code, down, shift)` with `UI_KEY_*` (GLFW's numbers), `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
-| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `scrollToEnd(h)`, `isScrolledToEnd(h)` |
-| events | `pollEvent()` → `UiEvent { kind: Click \| Change, element: handle, target: handle }` |
+| pointer (native) | `mouseMove`, `mouseButton(button, down, mods)`, `mouseWheel` |
+| keyboard | `key(code, down, mods)` with `UI_KEY_*` (GLFW's numbers) and `UI_MOD_*`, `claimKey(key, mods)`, `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
+| clipboard | `copyText(text)`, `provideClipboard(text)` / `takeClipboardWrite()` (native; no-op / None on the web) |
+| elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `elementContent(h)` / `setElementContent(h, text)` (plain text), `scrollToEnd(h)`, `isScrolledToEnd(h)`, `scrollIntoView(h)` |
+| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop, element, target, source, key, mods }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
 `ui::UiNav` turns a pad's d-pad and stick into arrow presses (hysteresis, one direction at a time, delay then repeat).
@@ -83,11 +87,32 @@ The rules that matter most:
 
   `isScrolledToEnd` is true within a pixel of the end, for a box that cannot scroll, and while a `scrollToEnd` waits
   for the next update. On the web an append touches no existing node, so a person's text selection survives it.
-  ⚠️ Natively it is a round trip, O(the whole content) per append, because @kama/rmlui has no append. The markup is
-  read back and written whole. Attributes, inline properties, classes, the scroll position and the bindings inside
-  (re-found at once, listeners included) survive. Focus, hover and a caret inside do not.
-- **The program gets every key first** and forwards the subset: TAB, the arrows, ENTER, and the four editing keys.
-  ENTER clicks the focused element, so it arrives as an ordinary click.
+  The cost is the new markup's on both legs. `childCount` and `removeChildren(h, 0, n)` trim the oldest lines without
+  a rewrite.
+- **The same events, in the same order, on both legs.**
+  - Two presses within half a second are Click, DoubleClick, Click.
+  - Focus moving is Blur on what had it, then Focus on what has it, for a button, a form control or an element with
+    a tab index. A bound container hears them before the element: RmlUi's focus does not bubble, so both legs listen
+    on the way down.
+  - A Click, a DoubleClick and a Drop carry the `mods` held (UI_MOD_*, Cmd folded into Ctrl).
+- **Keys are events too.** A `Key` (element 0, `target` the focused element) arrives for every key of the table that
+  types no character: Enter, Escape, Tab, the arrows, Delete, Backspace, Home/End, PageUp/PageDown and F1–F12. A–Z
+  and 0–9 arrive only with Ctrl or Alt held. `claimKey(UI_KEY_S, UI_MOD_CTRL)` keeps a shortcut from the browser
+  (no save dialog) as the key goes down; natively there is nothing to keep it from.
+- **The program gets every key first.** On the web the browser hears its own keys, and the program forwards the ring's
+  (TAB, the arrows, ENTER) to `key` for a page that swallows them. Natively it forwards every key it does not keep,
+  with its modifiers. ENTER clicks the focused element, so it arrives as an ordinary click.
+- **Drag and drop: `draggable="true"`.** Natively the package makes it RCSS `drag: drag-drop`; on the web it is
+  HTML5's. A drop raises `Drop` where it lands, with `target` the element dropped on and `source` the one dragged.
+  During the drag the dragged element has the class `ui-dragging` and the element under the pointer has
+  `ui-drop-target`.
+- **Tooltips: `title`.** After half a second of hover, on the program's clock (so call `update` or `updateAt` every
+  frame on the web too), the package shows the title in `#kama-ui-tooltip`. The document styles `.ui-tooltip`. It
+  hides on leaving, on a press and on a scroll. On the web the attribute is held as `data-kama-ui-title`, so the
+  browser's own popup never shows; a `[title]` rule matches natively only.
+- **The clipboard is the program's to bridge, natively.** Hand the OS clipboard's text to `provideClipboard` before
+  forwarding a paste, and put every `takeClipboardWrite` on the OS clipboard; RmlUi's fields then copy, cut and paste
+  with Ctrl+C/X/V. `copyText` works on both legs. The web needs none of this.
 - **The native renderer must apply `UiCommand`s in order and skip** (or implement) **every one whose `kind` is not
   `Draw`.** A `ClipSet` carries a mask's geometry, not a picture.
 
@@ -100,7 +125,7 @@ nothing to fetch or build first, and no `-L` path to set. Once the packages are 
 alone:
 
 ```json
-"dependencies": { "@kama/ui": { "version": "^0.2.0" } }
+"dependencies": { "@kama/ui": { "version": "^0.3.0" } }
 ```
 
 `@kama/rmlui` and `@kama/freetype` come with it. To build against a checkout instead (working on the package itself),
@@ -165,6 +190,23 @@ fn void openTool(int32 width, int32 height) {
 }
 ```
 
+The program owns the window natively, so four things are its part. The browser does all four by itself.
+
+- **Every key it does not keep** goes to `key(code, down, mods)`, with Cmd as `UI_MOD_CTRL`, and every character goes
+  to `typeChar`. That is how shortcuts reach the document as `Key` events, and how a field's Ctrl+A/C/X/V works.
+- **The modifiers held** go to `mouseButton(button, down, mods)`.
+- **`updateAt(seconds)` every frame**, on a monotonic clock. Double clicks and the tooltip's delay are measured on it.
+- **The clipboard:**
+
+  ```kama
+  ui.provideClipboard(text: osClipboardText);       // before forwarding a paste, or every frame
+  bool more = true;
+  while (more) {
+      Optional<string> w = ui.takeClipboardWrite();  // each copy, cut or copyText, oldest first
+      match (w) { case None: { more = false; } case Some(value: s): { /* put s on the OS clipboard */ } };
+  }
+  ```
+
 ### In a browser
 
 Build the program with `--target WASM`. This package's `jsLibraries` and `emSettings` reach the build on their own.
@@ -178,11 +220,15 @@ Build the program with `--target WASM`. This package's `jsLibraries` and `emSett
 - **Fonts** come from the page's own `@font-face`. **Images** are served beside the page. If native and web read
   different files for one picture, `setImageRewrite(nativeExt: ".pam", webExt: ".webp")` rewrites every `<img src>` as
   it is inserted.
-- **Keys.** The web leg assumes the page swallows the keys (a game's platform layer preventDefaults them, so SPACE and
-  the arrows do not scroll the page) and forwards the navigation subset through `key()`. The JS then moves the focus
-  in document order and clicks on ENTER. The browser types into its own `<input>`s.
-- `mouseMove`, `mouseButton`, `mouseWheel`, `update`, `render`, `typeChar`, `setDpRatio`, `loadFont` and
-  `provideImage` are no-ops here: the browser does those itself.
+- **Keys.** `Key` events come from the browser's own keydown, heard on the window in the capture phase, where
+  `claimKey` prevents a claimed shortcut's default. For a page that swallows the keys (a game's platform layer
+  preventDefaults them, so SPACE and the arrows do not scroll the page), the program forwards the navigation subset
+  through `key()`, and the JS moves the focus in document order and clicks on ENTER. The browser types into its own
+  `<input>`s.
+- **The clock.** `update` and `updateAt` keep the program's clock, which the tooltip's delay is measured on. Call one
+  every frame here too.
+- `mouseMove`, `mouseButton`, `mouseWheel`, `render`, `typeChar`, `setDpRatio`, `loadFont`, `provideImage` and
+  `provideClipboard` are no-ops here, and `takeClipboardWrite` is always None: the browser does those itself.
 
 ### Writing documents for both legs
 
@@ -237,6 +283,16 @@ The two scripts build one program, `tests/`. Shared on both legs:
   - attributes: `hidden` against the document's `[hidden]` rule, `checked` set and removed quietly, a person's click toggling
     it, a write after that still taking, and a `value` attribute written quietly;
   - a 3,400-byte value with three-byte characters read back whole;
+  - **keys**: Escape, F2, PageDown, Ctrl+S and Alt+1 each one `Key` naming the focused element; a letter alone or with
+    Shift none;
+  - **focus and blur** as one string per leg (`Blur:panel>first,Blur:first>first,Focus:panel>second,…`), and a press
+    on what cannot hold the focus taking it away with no Focus;
+  - Click, DoubleClick, Click for two presses within half a second, two spaced clicks giving none, and a Ctrl and a
+    Shift+Alt click carrying their modifiers;
+  - **a drag and drop**: the two classes mid-drag, one Drop heard by the list with its target and source, the classes
+    gone after, and an appended `draggable` row dragged onto a bound row's text;
+  - plain text written and read, ignored by a form control; a select's options rebuilt, appended to and trimmed with
+    its value settled and no change;
   - closing the document;
   - `close()`;
   - **a page** (`openPage`): shown without `setViewport` at the window's corner, and an `overflow: auto` box scrolled by
@@ -247,26 +303,33 @@ The two scripts build one program, `tests/`. Shared on both legs:
     the line before the new one kept in order with its handle, its class and its listener (clicked before its handle
     is used again); scrolled up, an append leaving the reader where they were, unfollowed; a pending `scrollToEnd`
     reading as at the end;
+  - a line scrolled to the top of the log, and the oldest five lines removed (a handle into them stale, one to a kept
+    line valid, a range past the end removing nothing);
+  - **a tooltip**: nothing a sixth of a second in, the title past half a second at 12 and 16 px from the pointer,
+    hidden on leaving, on a press (and staying hidden while hovered) and on the wheel;
   - a stage opened after the page, shown by `setViewport` at its own virtual width.
 
-On the native leg the click is RmlUi's own input: pointer, button down and up, update. On the web it is the browser's
-own hit test (`document.elementFromPoint`) and a bubbling `MouseEvent`. Typing and picking an option are real input
-natively (`typeChar`, a click that opens the select and one on the option); on the web, where a synthetic key types
-nothing, the helper fires what the browser would (an `input` per character and the `change` of letting go; the option
-selected, then `input` and `change`). Each leg adds its own checks:
+On the native leg the input is RmlUi's own: the pointer, the buttons (a click half a second of the clock apart from the
+last, so it never pairs into a double click), the wheel and keys. On the web it is the browser's own hit test
+(`document.elementFromPoint`) and the events a browser fires, in its order. A synthetic event performs no default
+action, so the helpers perform the ones that matter: a press focuses what it hits; typing sends an `input` per
+character and the `change` of letting go; an option is selected, then `input` and `change`; a drag is mousedown,
+dragstart, dragenter, dragover, drop, dragend; a key is a keydown at the focused element, then the same key forwarded to
+`key`. Each leg adds its own checks:
 
 - **Natively**: draws with vertices and a glyph-atlas texture, the provided picture at its own size, typing with
   Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
-  control", and a page reflowing to `setSize`.
+  control", Ctrl+A/C/V against the clipboard the program bridges, and a page reflowing to `setSize`.
   The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
-- **On the web**: a text selection surviving an append, a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
+- **On the web**: a claimed Ctrl+S prevented (and Cmd+S folded into it) while Ctrl+P is not, `copyText` reaching
+  `navigator.clipboard`, a title held as `data-kama-ui-title`, a text selection surviving an append, a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
   attribute), real elements, a row a rewrite released and a field from a closed
   document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
   window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,
   applied to the box under the point (a synthetic `WheelEvent` scrolls nothing).
 
-Results: **native 178 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 180 checks**, passing in headless
+Results: **native 219 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 224 checks**, passing in headless
 Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
 published.
 

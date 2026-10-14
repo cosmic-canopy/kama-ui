@@ -2,6 +2,16 @@
 mergeInto(LibraryManager.library, {
     $KamaUiTest: {
         held: null,   // kama_ui_test_hold
+        drag: null,   // kama_ui_test_drag_begin, for drag_end
+        copied: null, // kama_ui_test_spy_clipboard
+        // What a browser does with a press it was not told to skip: it focuses the nearest focusable element at or
+        // above what was pressed, or, when there is none, takes the focus off whatever had it.
+        focusOnPress: function (el) {
+            var f = el.closest ? el.closest('button, input, select, textarea, [tabindex]') : null;
+            if (f && typeof f.focus === 'function') { f.focus(); return; }
+            var a = document.activeElement;
+            if (a && a !== document.body && typeof a.blur === 'function') a.blur();
+        },
         // The same ratio kama_ui_web.js reads: framebuffer pixels -> CSS pixels.
         ratio: function () {
             var c = document.getElementById('canvas');
@@ -12,7 +22,13 @@ mergeInto(LibraryManager.library, {
     kama_ui_test_scroll_at__deps: ['$KamaUiTest'],
     kama_ui_test_scroll_at: function (x, y, notches) {
         var r = KamaUiTest.ratio();
-        for (var el = document.elementFromPoint(x / r, y / r); el; el = el.parentElement) {
+        // The wheel event first, as a browser fires it before it scrolls anything.
+        var hit = document.elementFromPoint(x / r, y / r);
+        if (hit) {
+            hit.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, view: window, clientX: x / r,
+                                                        clientY: y / r, deltaY: notches * 40 }));
+        }
+        for (var el = hit; el; el = el.parentElement) {
             var oy = getComputedStyle(el).overflowY;
             if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight) {
                 var was = el.scrollTop;
@@ -108,15 +124,104 @@ mergeInto(LibraryManager.library, {
         return (r.startContainer.isConnected && el.contains(r.startContainer) && sel.toString() === el.textContent) ? 1 : 0;
     },
 
-    kama_ui_test_click_at: function (x, y) {
-        // The same ratio kama_ui_web.js reads: framebuffer pixels -> CSS pixels.
-        var c = document.getElementById('canvas');
-        var r = (c && c.clientWidth > 0) ? (c.width / c.clientWidth) : 1;
+    kama_ui_test_press_at__deps: ['$KamaUiTest'],
+    kama_ui_test_press_at: function (x, y, mods, clicks) {
+        var r = KamaUiTest.ratio();
         var cx = x / r, cy = y / r;
         var el = document.elementFromPoint(cx, cy);
         if (!el) return 0;
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy }));
+        var init = function (detail) {
+            return { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, detail: detail,
+                     shiftKey: (mods & 1) !== 0, ctrlKey: (mods & 2) !== 0, altKey: (mods & 4) !== 0 };
+        };
+        for (var k = 1; k <= clicks; k++) {
+            if (el.dispatchEvent(new MouseEvent('mousedown', init(k)))) KamaUiTest.focusOnPress(el);
+            el.dispatchEvent(new MouseEvent('mouseup', init(k)));
+            el.dispatchEvent(new MouseEvent('click', init(k)));
+        }
+        if (clicks === 2) el.dispatchEvent(new MouseEvent('dblclick', init(2)));
         return 1;
+    },
+
+    kama_ui_test_key: function (code, mods, meta) {
+        var named = { 256: 'Escape', 257: 'Enter', 258: 'Tab', 259: 'Backspace', 261: 'Delete', 262: 'ArrowRight',
+                      263: 'ArrowLeft', 264: 'ArrowDown', 265: 'ArrowUp', 266: 'PageUp', 267: 'PageDown', 268: 'Home',
+                      269: 'End' };
+        var key = '', name = '';
+        if (code >= 65 && code <= 90) {
+            name = 'Key' + String.fromCharCode(code);
+            key = (mods & 1) ? String.fromCharCode(code) : String.fromCharCode(code + 32);
+        } else if (code >= 48 && code <= 57) {
+            name = 'Digit' + (code - 48);
+            key = String(code - 48);
+        } else if (code >= 290 && code <= 301) {
+            name = key = 'F' + (code - 289);
+        } else {
+            name = key = named[code] || '';
+        }
+        var init = { key: key, code: name, bubbles: true, cancelable: true, shiftKey: (mods & 1) !== 0,
+                     ctrlKey: (mods & 2) !== 0, altKey: (mods & 4) !== 0, metaKey: meta !== 0 };
+        var target = document.activeElement || document.body;
+        var allowed = target.dispatchEvent(new KeyboardEvent('keydown', init));
+        target.dispatchEvent(new KeyboardEvent('keyup', init));
+        return allowed ? 0 : 1;
+    },
+
+    kama_ui_test_hover_at__deps: ['$KamaUiTest'],
+    kama_ui_test_hover_at: function (x, y) {
+        var r = KamaUiTest.ratio();
+        var el = document.elementFromPoint(x / r, y / r);
+        if (!el) return 0;
+        var init = { bubbles: true, cancelable: true, view: window, clientX: x / r, clientY: y / r };
+        el.dispatchEvent(new MouseEvent('mouseover', init));
+        el.dispatchEvent(new MouseEvent('mousemove', init));
+        return 1;
+    },
+
+    kama_ui_test_drag_begin__deps: ['$KamaUiTest'],
+    kama_ui_test_drag_begin: function (fx, fy, tx, ty) {
+        var r = KamaUiTest.ratio();
+        var src = document.elementFromPoint(fx / r, fy / r), dst = document.elementFromPoint(tx / r, ty / r);
+        if (!src || !dst) return 0;
+        var dt = new DataTransfer();
+        KamaUiTest.drag = { src: src, dst: dst, x: tx / r, y: ty / r, dt: dt };
+        var at = function (px, py) {
+            return { bubbles: true, cancelable: true, view: window, clientX: px, clientY: py, button: 0, detail: 1,
+                     dataTransfer: dt };
+        };
+        if (src.dispatchEvent(new MouseEvent('mousedown', at(fx / r, fy / r)))) KamaUiTest.focusOnPress(src);
+        src.dispatchEvent(new DragEvent('dragstart', at(fx / r, fy / r)));
+        dst.dispatchEvent(new DragEvent('dragenter', at(tx / r, ty / r)));
+        dst.dispatchEvent(new DragEvent('dragover', at(tx / r, ty / r)));
+        return 1;
+    },
+
+    kama_ui_test_drag_end__deps: ['$KamaUiTest'],
+    kama_ui_test_drag_end: function () {
+        var d = KamaUiTest.drag;
+        if (!d) return 0;
+        var init = { bubbles: true, cancelable: true, view: window, clientX: d.x, clientY: d.y, dataTransfer: d.dt };
+        d.dst.dispatchEvent(new DragEvent('drop', init));
+        d.src.dispatchEvent(new DragEvent('dragend', init));
+        KamaUiTest.drag = null;
+        return 1;
+    },
+
+    kama_ui_test_spy_clipboard__deps: ['$KamaUiTest'],
+    kama_ui_test_spy_clipboard: function () {
+        KamaUiTest.copied = null;
+        var spy = { writeText: function (s) { KamaUiTest.copied = s; return Promise.resolve(); } };
+        try { Object.defineProperty(navigator, 'clipboard', { value: spy, configurable: true }); } catch (e) { }
+    },
+
+    kama_ui_test_copied_is__deps: ['$KamaUiTest'],
+    kama_ui_test_copied_is: function (textPtr) {
+        return KamaUiTest.copied === UTF8ToString(textPtr) ? 1 : 0;
+    },
+
+    kama_ui_test_has_attr: function (idPtr, attrPtr) {
+        var el = document.getElementById(UTF8ToString(idPtr));
+        return (el && el.hasAttribute(UTF8ToString(attrPtr))) ? 1 : 0;
     },
 
     kama_ui_test_attr_ends: function (idPtr, attrPtr, suffixPtr) {

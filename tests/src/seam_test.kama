@@ -5,32 +5,62 @@
 // the check lives in leg_native.kama or leg_web.kama instead. Then a page (`openPage`), in `pageTests`.
 
 import {
-    Tally, check, section, injectClick, injectScroll, typeInto, pick, fontPath, legTests, pageLegTests,
+    Tally, check, section, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll,
+    dragBegin, dragEnd, typeInto, pick, fontPath, legTests, pageLegTests,
     ui::UiContext, ui::UiEvent, ui::UiEventKind, ui::UiRect,
-    ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP, ui::UI_KEY_RIGHT,
+    ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP, ui::UI_KEY_RIGHT, ui::UI_KEY_ESCAPE,
+    ui::UI_KEY_F2, ui::UI_KEY_PAGE_DOWN, ui::UI_KEY_S, ui::UI_KEY_1, ui::UI_MOD_SHIFT, ui::UI_MOD_CTRL, ui::UI_MOD_ALT,
     ui::uidoc::escapeText,
 };
 export { seamTests, pageTests, Seen, collect, changesOn, press, centerX, centerY };
 
-// What the queue held: how many events, how many clicks and changes, and the handles and targets of the first two.
+// What the queue held of what an element did — clicks, changes, double clicks, drops — with the handles, targets,
+// source and modifiers of the first two. Keys, Focus and Blur are left out: they ride along with presses (a click
+// moves the focus, a press of ENTER is a key) and have checks of their own (`trace`, `keysOf`).
 type value Seen {
     public int32 count;
     public int32 clicks;
     public int32 changes;
+    public int32 doubles;
+    public int32 drops;
     public int32 first;
     public int32 second;
     public int32 firstTarget;
     public int32 secondTarget;
+    public int32 firstSource;
+    public int32 firstMods;
 
     public ctor none()
     {
         this.count = 0;
         this.clicks = 0;
         this.changes = 0;
+        this.doubles = 0;
+        this.drops = 0;
         this.first = 0;
         this.second = 0;
         this.firstTarget = 0;
         this.secondTarget = 0;
+        this.firstSource = 0;
+        this.firstMods = 0;
+    }
+}
+
+// What a press of keys gave the document: how many Key events, and the last one's key, modifiers, element and target.
+type value Pressed {
+    public int32 count;
+    public int32 key;
+    public int32 mods;
+    public int32 element;
+    public int32 target;
+
+    public ctor none()
+    {
+        this.count = 0;
+        this.key = 0;
+        this.mods = 0;
+        this.element = 0;
+        this.target = 0;
     }
 }
 
@@ -43,13 +73,25 @@ fn Seen collect(ref UiContext ui)
         match (e) {
             case None: { more = false; }
             case Some(value: ev): {
-                s.count = s.count + 1;
-                bool click = match (ev.kind) { case Click: true; case _: false; };
-                bool change = match (ev.kind) { case Change: true; case _: false; };
-                if (click) { s.clicks = s.clicks + 1; }
-                if (change) { s.changes = s.changes + 1; }
-                if (s.count == 1) { s.first = ev.element; s.firstTarget = ev.target; }
-                if (s.count == 2) { s.second = ev.element; s.secondTarget = ev.target; }
+                bool aside = match (ev.kind) { case Key: true; case Focus: true; case Blur: true; case _: false; };
+                if (!aside) {
+                    s.count = s.count + 1;
+                    bool click = match (ev.kind) { case Click: true; case _: false; };
+                    bool change = match (ev.kind) { case Change: true; case _: false; };
+                    bool twice = match (ev.kind) { case DoubleClick: true; case _: false; };
+                    bool dropped = match (ev.kind) { case Drop: true; case _: false; };
+                    if (click) { s.clicks = s.clicks + 1; }
+                    if (change) { s.changes = s.changes + 1; }
+                    if (twice) { s.doubles = s.doubles + 1; }
+                    if (dropped) { s.drops = s.drops + 1; }
+                    if (s.count == 1) {
+                        s.first = ev.element;
+                        s.firstTarget = ev.target;
+                        s.firstSource = ev.source;
+                        s.firstMods = ev.mods;
+                    }
+                    if (s.count == 2) { s.second = ev.element; s.secondTarget = ev.target; }
+                }
             }
         };
     }
@@ -74,10 +116,93 @@ fn int32 changesOn(ref UiContext ui, int32 handle)
     return n;
 }
 
+fn Pressed keysOf(ref UiContext ui)
+{
+    Pressed p = Pressed.none();
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool key = match (ev.kind) { case Key: true; case _: false; };
+                if (key) {
+                    p.count = p.count + 1;
+                    p.key = ev.key;
+                    p.mods = ev.mods;
+                    p.element = ev.element;
+                    p.target = ev.target;
+                }
+            }
+        };
+    }
+    return p;
+}
+
+fn string kindName(UiEventKind k)
+{
+    return match (k) {
+        case None: "None";
+        case Click: "Click";
+        case Change: "Change";
+        case DoubleClick: "DoubleClick";
+        case Key: "Key";
+        case Focus: "Focus";
+        case Blur: "Blur";
+        case Drop: "Drop";
+    };
+}
+
+// Everything the queue held but keys, in order, as "Kind:element>target" with each handle's id — one string to compare
+// across the legs.
+fn string trace(ref UiContext ui)
+{
+    string acc = "";
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool key = match (ev.kind) { case Key: true; case _: false; };
+                if (!key) {
+                    string kind = kindName(k: ev.kind);
+                    string element = ui.elementId(handle: ev.element);
+                    string target = ui.elementId(handle: ev.target);
+                    string one = "${kind}:${element}>${target}";
+                    if (acc.isEmpty()) { acc = copy one; } else { acc = "${acc},${one}"; }
+                }
+            }
+        };
+    }
+    return acc;
+}
+
+// The kinds one handle heard, in order, leaving out keys, focus and blur: "Click,DoubleClick,Click".
+fn string kindsOn(ref UiContext ui, int32 handle)
+{
+    string acc = "";
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool aside = match (ev.kind) { case Key: true; case Focus: true; case Blur: true; case _: false; };
+                if (!aside && ev.element == handle) {
+                    string kind = kindName(k: ev.kind);
+                    if (acc.isEmpty()) { acc = copy kind; } else { acc = "${acc},${kind}"; }
+                }
+            }
+        };
+    }
+    return acc;
+}
+
+// A key pressed as a person presses it (each leg's `injectKey`), then laid out.
 fn void press(ref UiContext ui, int32 key)
 {
-    ui.key(code: key, down: true, shift: false);
-    ui.key(code: key, down: false, shift: false);
+    injectKey(ui: ui, code: key, mods: 0);
     ui.update();
 }
 
@@ -109,7 +234,7 @@ fn string pageText()
         scrollbarvertical { width: 8dp; }
         scrollbarvertical sliderbar { min-height: 10dp; background-color: #808080ff; }
     </style></head><body>
-        <div id='page'><div id='bar'>Tools</div><div id='log'>
+        <div id='page'><div id='bar' title='The tool bar'>Tools</div><div id='log'>
             <p id='line1'>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p><p>seven</p><p>eight</p>
             <p>nine</p><p>ten</p><p>eleven</p><p>twelve</p>
         </div></div>
@@ -421,6 +546,126 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: committed == 0, what: "ENTER in a text field is a commit, not an edit: none (${committed})");
     ui.setElementText(handle: field, text: "");
 
+    section(what: "the seam: keys reach the document");
+    ui.claimKey(key: UI_KEY_S, mods: UI_MOD_CTRL);
+    check(t: t, ok: ui.focusElement(handle: first), what: "the ring is on first");
+    collect(ui: ui);
+    injectKey(ui: ui, code: UI_KEY_ESCAPE, mods: 0);
+    Pressed esc = keysOf(ui: ui);
+    check(t: t, ok: esc.count == 1 && esc.key == UI_KEY_ESCAPE && esc.mods == 0 && esc.element == 0 && esc.target == first,
+          what: "Escape is one Key, the document's, naming the focused element (${esc.count}, target ${esc.target})");
+    injectKey(ui: ui, code: UI_KEY_F2, mods: 0);
+    Pressed f2 = keysOf(ui: ui);
+    check(t: t, ok: f2.count == 1 && f2.key == UI_KEY_F2, what: "F2 is one (${f2.count})");
+    injectKey(ui: ui, code: UI_KEY_PAGE_DOWN, mods: 0);
+    Pressed pageDown = keysOf(ui: ui);
+    check(t: t, ok: pageDown.count == 1 && pageDown.key == UI_KEY_PAGE_DOWN, what: "PageDown is one (${pageDown.count})");
+    injectKey(ui: ui, code: UI_KEY_S, mods: UI_MOD_CTRL);
+    Pressed save = keysOf(ui: ui);
+    check(t: t, ok: save.count == 1 && save.key == UI_KEY_S && save.mods == UI_MOD_CTRL,
+          what: "Ctrl+S is one, with its modifier, claimed or not (${save.count}, mods ${save.mods})");
+    injectKey(ui: ui, code: UI_KEY_1, mods: UI_MOD_ALT);
+    Pressed alt = keysOf(ui: ui);
+    check(t: t, ok: alt.count == 1 && alt.key == UI_KEY_1 && alt.mods == UI_MOD_ALT, what: "Alt+1 is one (${alt.count})");
+    injectKey(ui: ui, code: UI_KEY_S, mods: 0);
+    injectKey(ui: ui, code: UI_KEY_S, mods: UI_MOD_SHIFT);
+    Pressed typing = keysOf(ui: ui);
+    check(t: t, ok: typing.count == 0, what: "a letter alone, or with Shift, is typing, not a Key (${typing.count})");
+
+    section(what: "the seam: focus and blur, ancestors first");
+    check(t: t, ok: ui.focusElement(handle: second), what: "focus moves from first to second");
+    string moved = trace(ui: ui);
+    check(t: t, ok: moved == "Blur:panel>first,Blur:first>first,Focus:panel>second,Focus:second>second",
+          what: "...a Blur on first, then a Focus on second, each heard by the panel before the button ('${moved}')");
+    UiRect meterBox = ui.elementRect(handle: meter);
+    injectClick(ui: ui, x: centerX(r: meterBox), y: centerY(r: meterBox));
+    string away = trace(ui: ui);
+    check(t: t, ok: away == "Blur:panel>second,Blur:second>second,Click:meter>meter",
+          what: "a press on what cannot hold the focus takes it away, and reports no Focus ('${away}')");
+
+    section(what: "the seam: a double click, between its two clicks; modifiers on a click");
+    UiRect lastBox = ui.elementRect(handle: last);
+    collect(ui: ui);
+    injectDoubleClick(ui: ui, x: centerX(r: lastBox), y: centerY(r: lastBox));
+    string twice = kindsOn(ui: ui, handle: last);
+    check(t: t, ok: twice == "Click,DoubleClick,Click", what: "two presses within half a second ('${twice}')");
+    injectClick(ui: ui, x: centerX(r: lastBox), y: centerY(r: lastBox));
+    injectClick(ui: ui, x: centerX(r: lastBox), y: centerY(r: lastBox));
+    string spaced = kindsOn(ui: ui, handle: last);
+    check(t: t, ok: spaced == "Click,Click", what: "two clicks half a second apart are two clicks ('${spaced}')");
+    injectModClick(ui: ui, x: centerX(r: lastBox), y: centerY(r: lastBox), mods: UI_MOD_CTRL);
+    Seen ctrl = collect(ui: ui);
+    check(t: t, ok: ctrl.clicks == 2 && ctrl.first == last && ctrl.firstMods == UI_MOD_CTRL,
+          what: "a Ctrl+click says Ctrl (${ctrl.firstMods})");
+    injectModClick(ui: ui, x: centerX(r: lastBox), y: centerY(r: lastBox), mods: UI_MOD_SHIFT | UI_MOD_ALT);
+    Seen shiftAlt = collect(ui: ui);
+    check(t: t, ok: shiftAlt.firstMods == (UI_MOD_SHIFT | UI_MOD_ALT), what: "...and Shift+Alt says both (${shiftAlt.firstMods})");
+
+    section(what: "the seam: drag and drop");
+    int32 rowB = ui.findElement(elementId: "row-b");
+    UiRect lbd = ui.elementRect(handle: list);
+    float32 inner = lbd.width - 12.0;
+    float32 dragX = lbd.x + 40.0;
+    collect(ui: ui);
+    dragBegin(ui: ui, fromX: dragX, fromY: lbd.y + 18.0, toX: dragX, toY: lbd.y + 42.0);
+    collect(ui: ui);
+    ui.update();
+    UiRect dragging = ui.elementRect(handle: rowA);
+    UiRect over = ui.elementRect(handle: rowB);
+    check(t: t, ok: dragging.width == 200.0 && over.width == 250.0,
+          what: "mid-drag the dragged row has `ui-dragging` and the row under the pointer `ui-drop-target` (${dragging.width}, ${over.width})");
+    dragEnd(ui: ui);
+    Seen dropped = collect(ui: ui);
+    check(t: t, ok: dropped.drops == 1 && dropped.first == list && dropped.firstTarget == rowB && dropped.firstSource == rowA,
+          what: "the drop is one Drop, heard by the list, target the row dropped on, source the row dragged (${dropped.drops}, ${dropped.firstTarget}, ${dropped.firstSource})");
+    ui.update();
+    UiRect after = ui.elementRect(handle: rowA);
+    UiRect afterB = ui.elementRect(handle: rowB);
+    check(t: t, ok: after.width == inner && afterB.width == inner, what: "...and both classes are gone (${after.width}, ${afterB.width})");
+    ui.appendInnerRml(handle: list, rml: "<div id='row-c' draggable='true'><p>Gamma</p></div>");
+    ui.update();
+    int32 rowC = ui.findElement(elementId: "row-c");
+    UiRect rc = ui.elementRect(handle: rowC);
+    dragBegin(ui: ui, fromX: dragX, fromY: rc.y + 12.0, toX: dragX, toY: lbd.y + 18.0);
+    dragEnd(ui: ui);
+    Seen droppedC = collect(ui: ui);
+    check(t: t, ok: droppedC.drops == 2 && droppedC.first == aName && droppedC.firstTarget == aName && droppedC.second == list &&
+                    droppedC.firstSource == rowC,
+          what: "an appended row with `draggable` drags too, onto the first row's text: bound, it hears the drop before the list (${droppedC.drops})");
+
+    section(what: "the seam: plain text, never parsed");
+    string plain = "<b>a & b</b> stays text";
+    ui.setElementContent(handle: note, text: plain);
+    string readBack = ui.elementContent(handle: note);
+    check(t: t, ok: readBack == plain, what: "setElementContent writes text, elementContent reads it ('${readBack}')");
+    ui.setElementText(handle: field, text: "kept");
+    ui.setElementContent(handle: field, text: "ignored");
+    string fieldKept = ui.elementText(handle: field);
+    string fieldContent = ui.elementContent(handle: field);
+    check(t: t, ok: fieldKept == "kept" && fieldContent == "", what: "...a form control ignores both ('${fieldKept}', '${fieldContent}')");
+    ui.setElementText(handle: field, text: "");
+
+    section(what: "the seam: a select's options rebuilt");
+    collect(ui: ui);
+    ui.setInnerRml(handle: picker, rml: "<option value='x'>X</option><option value='y' selected>Y</option>");
+    ui.update();
+    string rebuilt = ui.elementText(handle: picker);
+    int32 options = ui.childCount(handle: picker);
+    check(t: t, ok: rebuilt == "y" && options == 2, what: "a rewrite replaces the options, the value settling on `selected` ('${rebuilt}', ${options})");
+    ui.appendInnerRml(handle: picker, rml: "<option value='z'>Z</option>");
+    ui.update();
+    int32 three = ui.childCount(handle: picker);
+    string still = ui.elementText(handle: picker);
+    check(t: t, ok: three == 3 && still == "y", what: "an append adds one, the value kept (${three}, '${still}')");
+    int32 removedOption = ui.removeChildren(handle: picker, from: 0, count: 1);
+    ui.update();
+    int32 two = ui.childCount(handle: picker);
+    string stillY = ui.elementText(handle: picker);
+    check(t: t, ok: removedOption == 1 && two == 2 && stillY == "y",
+          what: "a removal takes one (${removedOption}, ${two}, '${stillY}')");
+    int32 rebuildChanges = changesOn(ui: ui, handle: picker);
+    check(t: t, ok: rebuildChanges == 0, what: "...and none of it is a change (${rebuildChanges})");
+
     legTests(t: t, ui: ui, first: first, field: field);
 
     section(what: "the seam: closing the document, and one from text");
@@ -468,8 +713,8 @@ fn void pageTests(ref Tally t)
     check(t: t, ok: logAfter.y == logBox.y, what: "...while the page around it stays put");
 
     section(what: "a page: a log follows its newest line");
-    string lines = "";
-    int32 n = 0;
+    string lines = "<p id='first-line'>line</p>";
+    int32 n = 1;
     while (n < 19) {
         lines = "${lines}<p>line</p>";
         n = n + 1;
@@ -542,6 +787,83 @@ fn void pageTests(ref Tally t)
     check(t: t, ok: ui.isScrolledToEnd(handle: log) && a2end.y + a2end.height > logBottom2 - 1.0,
           what: "...and the next update puts the newest line at the bottom");
     ui.appendInnerRml(handle: 0, rml: "<p>x</p>");
+
+    section(what: "a page: a log scrolled to a line, trimmed of its oldest");
+    int32 firstLine = ui.findElement(elementId: "first-line");
+    ui.scrollIntoView(handle: firstLine);
+    ui.update();
+    UiRect fl = ui.elementRect(handle: firstLine);
+    UiRect lt = ui.elementRect(handle: log);
+    check(t: t, ok: fl.y == lt.y, what: "scrollIntoView puts a line at the top of the log (${fl.y} of ${lt.y})");
+    int32 lines0 = ui.childCount(handle: log);
+    int32 trimmed = ui.removeChildren(handle: log, from: 0, count: 5);
+    ui.update();
+    int32 lines1 = ui.childCount(handle: log);
+    UiRect firstGone = ui.elementRect(handle: firstLine);
+    UiRect stillThere = ui.elementRect(handle: newestBound);
+    check(t: t, ok: trimmed == 5 && lines1 == lines0 - 5, what: "removeChildren drops the oldest five (${lines0} -> ${lines1})");
+    check(t: t, ok: firstGone.height == 0.0 && stillThere.height == 30.0,
+          what: "...a handle to a removed line is stale, one to a kept line still names it");
+    int32 beyond = ui.removeChildren(handle: log, from: lines1, count: 3);
+    check(t: t, ok: beyond == 0 && ui.childCount(handle: log) == lines1, what: "...and a range past the end removes nothing");
+
+    section(what: "a page: a tooltip from `title`");
+    int32 bar = ui.findElement(elementId: "bar");
+    int32 tip = ui.findElement(elementId: "kama-ui-tooltip");
+    UiRect barBox = ui.elementRect(handle: bar);
+    float32 hx = barBox.x + 20.0;
+    float32 hy = barBox.y + 10.0;
+    check(t: t, ok: tip > 0, what: "the package's tooltip element is in the document");
+    injectHover(ui: ui, x: hx, y: hy);
+    int32 frames = 0;
+    while (frames < 10) {
+        ui.update();
+        frames = frames + 1;
+    }
+    string early = ui.elementContent(handle: tip);
+    check(t: t, ok: early == "", what: "a sixth of a second in, nothing shows ('${early}')");
+    while (frames < 35) {
+        ui.update();
+        frames = frames + 1;
+    }
+    string shown = ui.elementContent(handle: tip);
+    UiRect tipBox = ui.elementRect(handle: tip);
+    check(t: t, ok: shown == "The tool bar", what: "past half a second the title shows ('${shown}')");
+    check(t: t, ok: tipBox.x > hx + 11.0 && tipBox.x < hx + 13.0 && tipBox.y > hy + 15.0 && tipBox.y < hy + 17.0,
+          what: "...12 px right of and 16 px below the pointer (${tipBox.x}, ${tipBox.y} for ${hx}, ${hy})");
+    UiRect logHover = ui.elementRect(handle: log);
+    injectHover(ui: ui, x: centerX(r: logHover), y: centerY(r: logHover));
+    ui.update();
+    string left = ui.elementContent(handle: tip);
+    check(t: t, ok: left == "", what: "leaving the element hides it ('${left}')");
+    injectHover(ui: ui, x: hx, y: hy);
+    frames = 0;
+    while (frames < 35) {
+        ui.update();
+        frames = frames + 1;
+    }
+    check(t: t, ok: ui.elementContent(handle: tip) == "The tool bar", what: "hovered again, it shows again");
+    injectClick(ui: ui, x: hx, y: hy);
+    frames = 0;
+    while (frames < 40) {
+        ui.update();
+        frames = frames + 1;
+    }
+    string pressed = ui.elementContent(handle: tip);
+    check(t: t, ok: pressed == "", what: "a press hides it, and it stays hidden while the same element is hovered ('${pressed}')");
+    injectHover(ui: ui, x: centerX(r: logHover), y: centerY(r: logHover));
+    ui.update();
+    injectHover(ui: ui, x: hx, y: hy);
+    frames = 0;
+    while (frames < 35) {
+        ui.update();
+        frames = frames + 1;
+    }
+    check(t: t, ok: ui.elementContent(handle: tip) == "The tool bar", what: "another element hovered and back: it shows");
+    injectScroll(ui: ui, x: hx, y: hy, notches: 1.0);
+    string wheeled = ui.elementContent(handle: tip);
+    check(t: t, ok: wheeled == "", what: "the wheel hides it ('${wheeled}')");
+    collect(ui: ui);
 
     pageLegTests(t: t, ui: ui, page: page);
     ui.close();

@@ -4,16 +4,33 @@
 #ifndef KAMA_UI_TEST_H
 #define KAMA_UI_TEST_H
 #include <stdint.h>
-// Dispatch a bubbling MouseEvent('click') at the element under (x, y) — FRAMEBUFFER pixels, as `elementRect` returns
-// them — found by the browser's own hit test (document.elementFromPoint). 1 when something was under the point.
-extern int32_t kama_ui_test_click_at(float x, float y);
+// A press at the element under (x, y) — FRAMEBUFFER pixels, as `elementRect` returns them — found by the browser's own
+// hit test (document.elementFromPoint), as a browser reports one: mousedown (and, unless it was prevented, the focus a
+// press gives — a synthetic event performs no default action, so the helper does that one), mouseup, click; `clicks` 2
+// repeats it with `detail` 2 and adds dblclick. `mods` are UI_MOD_*. 1 when something was under the point.
+extern int32_t kama_ui_test_press_at(float x, float y, int32_t mods, int32_t clicks);
+// A key's keydown and keyup at the focused element, for a UI_KEY_* with UI_MOD_* (and `meta` for Cmd). 1 when the
+// keydown's default was prevented.
+extern int32_t kama_ui_test_key(int32_t code, int32_t mods, int32_t meta);
+// mouseover and mousemove at the element under (x, y). 1 when something was there.
+extern int32_t kama_ui_test_hover_at(float x, float y);
+// A drag as a browser reports one, from the element under one point to the element under another: mousedown (with its
+// focus), dragstart, dragenter and dragover — then, at `drag_end`, drop and dragend. 1 when both points hit something.
+extern int32_t kama_ui_test_drag_begin(float from_x, float from_y, float to_x, float to_y);
+extern int32_t kama_ui_test_drag_end(void);
+// navigator.clipboard.writeText replaced by a recorder, and whether it last recorded `text`.
+extern void kama_ui_test_spy_clipboard(void);
+extern int32_t kama_ui_test_copied_is(const char* text);
+// 1 when the element with this id has the attribute.
+extern int32_t kama_ui_test_has_attr(const char* id, const char* attr);
 // Set document.title to "kama-ui web: PASS <run>" or "kama-ui web: FAIL <failed>/<run>", and write the same into
 // <pre id="kama-ui-test-result">.
 extern void kama_ui_test_report(int32_t run, int32_t failed);
 // 1 when the element with this id has the attribute and its value ends with `suffix` (what the image rewrite did).
 extern int32_t kama_ui_test_attr_ends(const char* id, const char* attr, const char* suffix);
-// Scroll the nearest scrollable box under (x, y) — framebuffer pixels — by `notches` x 40 CSS pixels, which is what the
-// browser does for a wheel itself (a synthetic WheelEvent scrolls nothing). 1 when something scrolled.
+// The wheel at (x, y) — framebuffer pixels: a `wheel` event at the element there, then the nearest scrollable box
+// scrolled by `notches` x 40 CSS pixels, which is what the browser does for a wheel itself (a synthetic WheelEvent
+// scrolls nothing). 1 when something scrolled.
 extern int32_t kama_ui_test_scroll_at(float x, float y, float notches);
 // Keep the element with this id, to fire at after a rewrite or a new document has let it go. 1 when found.
 extern int32_t kama_ui_test_hold(const char* id);

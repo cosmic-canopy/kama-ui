@@ -96,9 +96,10 @@ extern int32_t kama_ui_web_focus_held(void);
 extern void kama_ui_web_focus_document(void);
 
 // `target` (0.2.0): the handle for the nearest element with an id from the event's target up to the bound element,
-// minted without a listener if nobody bound it; 0 when the target has left the document since. Both outputs are
-// written on every path.
-extern int32_t kama_ui_web_poll_event(int32_t* handle, int32_t* target);
+// minted without a listener if nobody bound it; 0 when the target has left the document since. (0.3.0) Kinds 3 a double
+// click, 4 a key, 5 focus, 6 blur, 7 a drop; `source` a drop's dragged element named the same way, `key` a key's
+// UI_KEY_*, `mods` UI_MOD_*. Every output is written on every path.
+extern int32_t kama_ui_web_poll_event(int32_t* handle, int32_t* target, int32_t* source, int32_t* key, int32_t* mods);
 
 // Where the overlay sits over the canvas, and whether it is on screen at all.
 //
@@ -157,5 +158,22 @@ extern int32_t kama_ui_web_is_scrolled_to_end(int32_t handle);
 // (0.2.2) `insertAdjacentHTML('beforeend', …)` after the image rewrite: the existing children, their listeners and a
 // text selection in them are untouched, and no binding is released.
 extern void kama_ui_web_append_inner(int32_t handle, const char* html);
+
+// ---- 0.3.0 ----
+// The program's clock — a step (`absolute` 0, from `update`) or the time itself (1, `updateAt`) — and the tooltip's turn.
+extern void kama_ui_web_update(double seconds, int32_t absolute);
+// Children as RmlUi counts them (elements and non-blank text), and removing `count` from `from` (clamped; returns how
+// many went, their bindings released).
+extern int32_t kama_ui_web_child_count(int32_t handle);
+extern int32_t kama_ui_web_remove_children(int32_t handle, int32_t from, int32_t count);
+// Plain text: the non-blank text runs inside (measured and read as `kama_ui_web_element_text` is), and `textContent`.
+// Nothing for a form control.
+extern int32_t kama_ui_web_element_content(int32_t handle, char* buffer, int32_t capacity);
+extern void kama_ui_web_set_content(int32_t handle, const char* text);
+extern void kama_ui_web_scroll_into_view(int32_t handle);
+// The browser's default for this key and these modifiers is prevented from now on (the window's keydown listener).
+extern void kama_ui_web_claim_key(int32_t key, int32_t mods);
+// `navigator.clipboard.writeText`, whose refusal is swallowed.
+extern void kama_ui_web_copy_text(const char* text);
 
 #endif  // KAMA_UI_WEB_H
