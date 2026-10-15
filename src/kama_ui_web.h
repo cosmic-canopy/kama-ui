@@ -99,7 +99,8 @@ extern void kama_ui_web_focus_document(void);
 // minted without a listener if nobody bound it; 0 when the target has left the document since. (0.3.0) Kinds 3 a double
 // click, 4 a key, 5 focus, 6 blur, 7 a drop; `source` a drop's dragged element named the same way, `key` a key's
 // UI_KEY_*, `mods` UI_MOD_*. Every output is written on every path.
-extern int32_t kama_ui_web_poll_event(int32_t* handle, int32_t* target, int32_t* source, int32_t* key, int32_t* mods);
+extern int32_t kama_ui_web_poll_event(int32_t* handle, int32_t* target, int32_t* source, int32_t* key, int32_t* mods,
+                                      int32_t* files, float* at_x, float* at_y);
 
 // Where the overlay sits over the canvas, and whether it is on screen at all.
 //
@@ -175,5 +176,24 @@ extern void kama_ui_web_scroll_into_view(int32_t handle);
 extern void kama_ui_web_claim_key(int32_t key, int32_t mods);
 // `navigator.clipboard.writeText`, whose refusal is swallowed.
 extern void kama_ui_web_copy_text(const char* text);
+
+// ---- 0.4.0: files ----
+// The chooser (`<input type=file>`, clicked within the person's gesture): the list its answer fills, or 0 (one is
+// waiting, no document, no recent gesture). A list's size, name (measured and read as `kama_ui_web_element_text` is)
+// and release. The size is a double, exact to 2^53, so no 64-bit integer crosses the JS boundary.
+extern int32_t kama_ui_web_choose_files(const char* accept, int32_t multiple);
+extern int32_t kama_ui_web_file_count(int32_t files);
+extern int32_t kama_ui_web_file_name(int32_t files, int32_t index, char* buffer, int32_t capacity);
+extern double  kama_ui_web_file_size(int32_t files, int32_t index);
+extern void    kama_ui_web_release_files(int32_t files);
+// A read of a slice of a file: its handle (0 for a bad list or index), and later its length (-2 while it waits, -1
+// failed or unknown), its bytes copied into `buffer` (which lets the read go), and its error text.
+extern int32_t kama_ui_web_read_file(int32_t files, int32_t index, double offset, int32_t count);
+extern int32_t kama_ui_web_read_length(int32_t read);
+extern void    kama_ui_web_read_take(int32_t read, uint8_t* buffer);
+extern int32_t kama_ui_web_read_error(int32_t read, char* buffer, int32_t capacity);
+extern void    kama_ui_web_read_release(int32_t read);
+// A download of `count` bytes as `name` (`type` its media type): 1 when offered.
+extern int32_t kama_ui_web_save_file(const char* name, const char* type, const uint8_t* bytes, int32_t count);
 
 #endif  // KAMA_UI_WEB_H

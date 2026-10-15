@@ -10,10 +10,12 @@ import {
     core::println,
     ui::UiContext, ui::UiRect, ui::UiEvent, ui::UiEventKind,
     ui::UI_KEY_S, ui::UI_KEY_P, ui::UI_MOD_CTRL,
+    std::collections::DynamicArray,
 };
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
     typeInto, pick, legTests, pageLegTests, report,
+    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks,
 };
 
 extern "kama_ui_test.h";
@@ -37,6 +39,16 @@ extern fn int32 kama_ui_test_pick(UnsafeConstPtr<cchar> select_id, UnsafeConstPt
 extern fn int32 kama_ui_test_drag(UnsafeConstPtr<cchar> id, int32 steps);
 extern fn int32 kama_ui_test_select(UnsafeConstPtr<cchar> id);
 extern fn int32 kama_ui_test_selection_holds(UnsafeConstPtr<cchar> id);
+// 0.4.0: files (kama_ui_test.h).
+extern fn int32 kama_ui_test_drop_files(float32 x, float32 y, int32 how);
+extern fn void  kama_ui_test_allow_chooser();
+extern fn int32 kama_ui_test_chooser_is(UnsafeConstPtr<cchar> accept, int32 multiple);
+extern fn int32 kama_ui_test_answer_chooser(int32 cancel);
+extern fn int32 kama_ui_test_paste_files();
+extern fn void  kama_ui_test_spy_saves();
+extern fn int32 kama_ui_test_saved(UnsafePtr<cchar> buffer, int32 capacity);
+extern fn int32 kama_ui_test_bridge_is(int32 files, int32 index, UnsafeConstPtr<cchar> name);
+extern fn string kama_string_from_raw(UnsafeConstPtr<uint8> src, isize start, isize len);
 
 // Ignored on this leg: the browser takes its faces from the page's @font-face.
 fn string fontPath() { return ""; }
@@ -210,6 +222,86 @@ fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
     UiRect again = ui.elementRect(handle: page);
     check(t: t, ok: again.x == 0.0 && again.width == pr.width && stageIsPage(),
           what: "...and true shows it again, neither moved nor scaled (x ${again.x}, ${again.width} wide)");
+}
+
+// ---- files (0.4.0): the events a browser fires, with `File`s in them ----
+
+// Two files, a.txt ("alpha") and b.png ("PNG!"), dragged in from outside and dropped at the point: dragenter, dragover,
+// drop (`how` 2). `how` 1 stops after the dragover, 3 leaves the window again, 4 drops plain text instead.
+unsafe fn bool dropTestFiles(ref UiContext ui, float32 x, float32 y)
+{
+    return kama_ui_test_drop_files(x: x, y: y, how: 2) != 0;
+}
+
+// A synthetic click is no gesture, so the test says there was one (`navigator.userActivation`).
+unsafe fn void allowChooser() { kama_ui_test_allow_chooser(); }
+
+// The chooser waiting, as it was asked (its `<input type=file>`), answered with the two files or cancelled.
+unsafe fn bool answerChooser(ref UiContext ui, int32 files, const ref string accept, bool multiple, bool cancel)
+{
+    int32 many = 0;
+    if (multiple) { many = 1; }
+    if (kama_ui_test_chooser_is(accept: accept.cstr(), multiple: many) == 0) { return false; }
+    int32 c = 0;
+    if (cancel) { c = 1; }
+    return kama_ui_test_answer_chooser(cancel: c) != 0;
+}
+
+unsafe fn bool pasteTestFiles(ref UiContext ui) { return kama_ui_test_paste_files() != 0; }
+
+unsafe fn void spySaves() { kama_ui_test_spy_saves(); }
+
+// The download the spy stopped: "name size type".
+unsafe fn string savedAs(ref UiContext ui)
+{
+    int32 n = kama_ui_test_saved(buffer: null, capacity: 0);
+    if (n <= 0) { return "(none)"; }
+    DynamicArray<uint8> buf = DynamicArray.empty();
+    isize i = 0;
+    while (i <= cast<isize>(n)) {
+        buf.add(item: 0ui8);
+        i = i + 1;
+    }
+    kama_ui_test_saved(buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+    return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
+}
+
+// What only this leg has: no path; the zone highlighted while files are dragged over the page, and not once they
+// leave; the bridge another library takes a `File` from; text dragged in from outside is no drop. The reads begun
+// before settle only once the page has the event loop back, so polling here takes none of theirs.
+unsafe fn void fileLegChecks(ref Tally t, ref UiContext ui, int32 list, int32 zone, float32 x, float32 y)
+{
+    section(what: "web: a file has no path");
+    check(t: t, ok: ui.filePath(files: list, index: 0).isEmpty(), what: "filePath is empty: a page never learns one");
+
+    section(what: "web: files dragged over the page");
+    check(t: t, ok: kama_ui_test_drop_files(x: x, y: y, how: 1) != 0, what: "two files are dragged over the zone's top row");
+    UiRect over = ui.elementRect(handle: zone);
+    check(t: t, ok: over.width == 310.0, what: "...and the zone has `ui-drop-target` (${over.width})");
+    check(t: t, ok: kama_ui_test_drop_files(x: x, y: y, how: 3) != 0, what: "they leave the window");
+    UiRect left = ui.elementRect(handle: zone);
+    check(t: t, ok: left.width == 300.0, what: "...and the class is gone (${left.width})");
+
+    section(what: "web: the bridge to another library");
+    check(t: t, ok: kama_ui_test_bridge_is(files: list, index: 1, name: "b.png".cstr()) != 0 &&
+                    kama_ui_test_bridge_is(files: list, index: 2, name: "".cstr()) != 0,
+          what: "Module.kamaUiFile hands over the listed File itself, and null outside the list");
+
+    section(what: "web: text dragged in is no drop");
+    check(t: t, ok: kama_ui_test_drop_files(x: x, y: y, how: 4) != 0, what: "text is dropped on the zone");
+    int32 drops = 0;
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool d = match (ev.kind) { case Drop: true; case _: false; };
+                if (d) { drops = drops + 1; }
+            }
+        };
+    }
+    check(t: t, ok: drops == 0, what: "...and nothing reaches the program (${drops})");
 }
 
 unsafe fn int32 report(ref Tally t)

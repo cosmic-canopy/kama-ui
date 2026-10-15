@@ -17,7 +17,7 @@ file @compileFor(ARCH_WASM32);
 // ⚠️ ONE ASSET, THOUGH. A program's `.rml` documents are the single source for both legs — RmlUi parses them, and
 // `ui::uidoc::rmlToHtml` rewrites the same bytes into HTML here. There is no second copy of any screen.
 
-import { UiHost, UiCommand, UiTexture, UiEvent, UiEventKind, UiRect, UI_MOD_SHIFT,
+import { UiHost, UiCommand, UiTexture, UiEvent, UiEventKind, UiRect, UI_MOD_SHIFT, uiFileType,
          core::println,
          ui::uidoc::rmlToHtml, std::fs::readFile, std::io::IoError,
          std::collections::DynamicArray, std::collections::ConstView };
@@ -30,7 +30,8 @@ extern fn int32 kama_ui_web_set_document(UnsafeConstPtr<cchar> html);
 extern fn void  kama_ui_web_set_inner(int32 handle, UnsafeConstPtr<cchar> html);
 extern fn int32 kama_ui_web_bind(UnsafeConstPtr<cchar> element_id);
 extern fn int32 kama_ui_web_poll_event(UnsafePtr<int32> handle, UnsafePtr<int32> target, UnsafePtr<int32> source,
-                                       UnsafePtr<int32> key, UnsafePtr<int32> mods);
+                                       UnsafePtr<int32> key, UnsafePtr<int32> mods, UnsafePtr<int32> files,
+                                       UnsafePtr<float32> at_x, UnsafePtr<float32> at_y);
 extern fn void  kama_ui_web_set_viewport(float32 offset_x, float32 offset_y, float32 scale, int32 visible);
 extern fn int32 kama_ui_web_element_rect(int32 handle, UnsafePtr<float32> x, UnsafePtr<float32> y, UnsafePtr<float32> width, UnsafePtr<float32> height);
 extern fn float32 kama_ui_web_element_value(int32 handle);
@@ -67,6 +68,19 @@ extern fn void  kama_ui_web_set_content(int32 handle, UnsafeConstPtr<cchar> text
 extern fn void  kama_ui_web_scroll_into_view(int32 handle);
 extern fn void  kama_ui_web_claim_key(int32 key, int32 mods);
 extern fn void  kama_ui_web_copy_text(UnsafeConstPtr<cchar> text);
+// 0.4.0 (kama_ui_web.h).
+extern fn int32 kama_ui_web_choose_files(UnsafeConstPtr<cchar> accept, int32 multiple);
+extern fn int32 kama_ui_web_file_count(int32 files);
+extern fn int32 kama_ui_web_file_name(int32 files, int32 index, UnsafePtr<cchar> buffer, int32 capacity);
+extern fn float64 kama_ui_web_file_size(int32 files, int32 index);
+extern fn void  kama_ui_web_release_files(int32 files);
+extern fn int32 kama_ui_web_read_file(int32 files, int32 index, float64 offset, int32 count);
+extern fn int32 kama_ui_web_read_length(int32 read);
+extern fn void  kama_ui_web_read_take(int32 read, UnsafePtr<uint8> buffer);
+extern fn int32 kama_ui_web_read_error(int32 read, UnsafePtr<cchar> buffer, int32 capacity);
+extern fn void  kama_ui_web_read_release(int32 read);
+extern fn int32 kama_ui_web_save_file(UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> type, UnsafeConstPtr<uint8> bytes,
+                                      int32 count);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -87,6 +101,9 @@ fn UiEventKind kindOf(int32 raw)
     if (raw == 5) { return UiEventKind::Focus; }
     if (raw == 6) { return UiEventKind::Blur; }
     if (raw == 7) { return UiEventKind::Drop; }
+    if (raw == 8) { return UiEventKind::Files; }
+    if (raw == 9) { return UiEventKind::Paste; }
+    if (raw == 10) { return UiEventKind::Read; }
     return UiEventKind::None;
 }
 
@@ -341,11 +358,15 @@ type value UiContext implements UiHost {
         int32 source = 0;
         int32 key = 0;
         int32 mods = 0;
+        int32 files = 0;
+        float32 atX = 0;
+        float32 atY = 0;
         int32 raw = kama_ui_web_poll_event(handle: addr(of: handle), target: addr(of: target), source: addr(of: source),
-                                           key: addr(of: key), mods: addr(of: mods));
+                                           key: addr(of: key), mods: addr(of: mods), files: addr(of: files),
+                                           at_x: addr(of: atX), at_y: addr(of: atY));
         if (raw == 0) { return Optional::None; }
         UiEvent ev = UiEvent.make(kind: kindOf(raw: raw), element: handle, target: target, source: source, key: key,
-                                  mods: mods);
+                                  mods: mods, files: files, atX: atX, atY: atY);
         return Optional::Some(value: ev);
     }
 
@@ -501,5 +522,121 @@ type value UiContext implements UiHost {
     {
         if (this.ready == 0) { return false; }
         return kama_ui_web_set_property(handle: handle, name: name.cstr(), value: value.cstr()) != 0;
+    }
+
+    // ---- 0.4.0: files (host.kama). A file stays the browser's `File`, in the JS, until a read asks for bytes. ----
+
+    // The chooser is an `<input type=file>` the JS clicks at once, inside the gesture that asked (host.kama).
+    public unsafe fn int32 chooseFiles(const ref string accept, bool multiple)
+    {
+        if (this.ready == 0) { return 0; }
+        int32 many = 0;
+        if (multiple) { many = 1; }
+        return kama_ui_web_choose_files(accept: accept.cstr(), multiple: many);
+    }
+
+    public unsafe fn int32 fileCount(int32 files)
+    {
+        if (this.ready == 0) { return 0; }
+        return kama_ui_web_file_count(files: files);
+    }
+
+    // Read as `elementText` is: measured, then read in full.
+    public unsafe fn string fileName(int32 files, int32 index)
+    {
+        if (this.ready == 0) { return ""; }
+        int32 n = kama_ui_web_file_name(files: files, index: index, buffer: null, capacity: 0);
+        if (n <= 0) { return ""; }
+        DynamicArray<uint8> buf = sized(n: n);
+        kama_ui_web_file_name(files: files, index: index, buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+        return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
+    }
+
+    public unsafe fn int64 fileSize(int32 files, int32 index)
+    {
+        if (this.ready == 0) { return -1; }
+        float64 size = kama_ui_web_file_size(files: files, index: index);
+        if (size < 0.0) { return -1; }
+        return cast<int64>(size);
+    }
+
+    // From the name, by the package's table, as natively: never the browser's own guess (`File.type`).
+    public unsafe fn string fileType(int32 files, int32 index)
+    {
+        string name = this.fileName(files: files, index: index);
+        if (name.isEmpty()) { return ""; }
+        return uiFileType(name: name);
+    }
+
+    // A page never learns a file's path (host.kama).
+    public unsafe fn string filePath(int32 files, int32 index) { return ""; }
+
+    public unsafe fn void releaseFiles(int32 files)
+    {
+        if (this.ready == 0) { return; }
+        kama_ui_web_release_files(files: files);
+    }
+
+    // `Blob.slice(offset, offset + count).arrayBuffer()`: the bytes wait in the JS until `readBytes` takes them.
+    public unsafe fn int32 readFile(int32 files, int32 index, int64 offset, int32 count)
+    {
+        if (this.ready == 0 || offset < 0 || count < 0) { return 0; }
+        return kama_ui_web_read_file(files: files, index: index, offset: cast<float64>(offset), count: count);
+    }
+
+    public unsafe fn bool readBytes(int32 read, ref DynamicArray<uint8> into)
+    {
+        into.clear();
+        if (this.ready == 0) { return false; }
+        int32 n = kama_ui_web_read_length(read: read);
+        if (n == (0 - 2)) { return false; }
+        if (n < 0) {
+            kama_ui_web_read_release(read: read);
+            return false;
+        }
+        isize size = cast<isize>(n);
+        into.reserve(n: size);
+        isize i = 0;
+        while (i < size) {
+            into.add(item: 0ui8);
+            i = i + 1;
+        }
+        kama_ui_web_read_take(read: read, buffer: into.dataPtrMut());
+        return true;
+    }
+
+    public unsafe fn string readError(int32 read)
+    {
+        if (this.ready == 0) { return ""; }
+        int32 n = kama_ui_web_read_error(read: read, buffer: null, capacity: 0);
+        if (n <= 0) { return ""; }
+        DynamicArray<uint8> buf = sized(n: n);
+        kama_ui_web_read_error(read: read, buffer: cast<UnsafePtr<cchar>>(buf.dataPtrMut()), capacity: n + 1);
+        return kama_string_from_raw(src: buf.dataPtr(), start: 0, len: cast<isize>(n));
+    }
+
+    // A Blob of the bytes, and a hidden `<a download>` clicked: the browser saves it as it saves any download.
+    public unsafe fn bool saveFile(const ref string name, ConstView<uint8> bytes)
+    {
+        if (this.ready == 0) { return false; }
+        string type = uiFileType(name: name);
+        int32 n = cast<int32>(bytes.length());
+        return kama_ui_web_save_file(name: name.cstr(), type: type.cstr(), bytes: bytes.dataPtr(), count: n) != 0;
+    }
+
+    // The browser opens its own chooser and save dialog, and reports its own drops and pastes: the program's half
+    // (host.kama) has nothing to do on this leg.
+    public unsafe fn int32 takeFileRequest() { return 0; }
+    public unsafe fn string fileRequestAccept(int32 files) { return ""; }
+    public unsafe fn bool fileRequestMultiple(int32 files) { return false; }
+    public unsafe fn void provideFiles(int32 files, const ref DynamicArray<string> paths) { }
+    public unsafe fn void dropFiles(const ref DynamicArray<string> paths, float32 x, float32 y) { }
+    public unsafe fn void pasteFiles(const ref DynamicArray<string> paths) { }
+    public unsafe fn int32 takeSaveRequest() { return 0; }
+    public unsafe fn string saveRequestName(int32 save) { return ""; }
+    public unsafe fn bool saveRequestBytes(int32 save, ref DynamicArray<uint8> into)
+    {
+        into.clear();
+        return false;
     }
 }

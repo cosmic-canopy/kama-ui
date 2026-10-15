@@ -12,7 +12,10 @@ file @compileFor(!ARCH_WASM32);
 //   - `update` steps the clock 1/60 s; writes into controls are quiet;
 //   - (0.3.0) the package's own listeners on the document's root — keys, the drag's progress, scrolling — whose events
 //     `pollEvent` turns into `Key` events and the drag's classes; `draggable="true"` given RCSS `drag: drag-drop`; and
-//     the tooltip, an element the package appends to every document and shows from `update`.
+//     the tooltip, an element the package appends to every document and shows from `update`;
+//   - (0.4.0) the files (host.kama): every list, read and save request the program provided or asked for, and the
+//     events they raise, in a `FileStore` on the heap behind the context's `store` pointer — the one piece of state
+//     here that is not RmlUi's — made when the UI starts and dropped at `close`.
 //
 // ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
 // would reach the wasm leg too; the whole-unit gate (kama 0.9.150) keeps it — and its import of @kama/rmlui — out. The
@@ -34,10 +37,373 @@ import {
     rmlui::KEY_ESCAPE, rmlui::KEY_PAGE_UP, rmlui::KEY_PAGE_DOWN, rmlui::KEY_F1, rmlui::KEY_F12, rmlui::KEY_A,
     rmlui::KEY_Z, rmlui::KEY_0, rmlui::KEY_9,
     rmlui::MOD_NONE, rmlui::MOD_SHIFT, rmlui::MOD_CTRL, rmlui::MOD_ALT, rmlui::MOD_META,
-    std::collections::ConstView,
+    uiFileType,
+    std::collections::ConstView, std::collections::DynamicArray,
+    std::fs::File, std::fs::OpenMode, std::fs::Metadata, std::fs::stat, std::io::IoError,
+    std::path::fileName, std::memory::Owned, std::memory::replace,
     std::fmt::parse, std::fmt::ParseError,
 };
 export { UiContext };
+
+// ---- 0.4.0: files ----
+
+// ⚠️ std's `File` has no seek (KAMA_GAPS.md), and a slice of a large file must not cost reading what comes before it:
+// a read starts its descriptor with the C library's own positioned seek (declared by kama_ui_native.h).
+extern "kama_ui_native.h";
+@compileFor(!OS_WINDOWS)
+extern fn int64 lseek(int32 fd, int64 offset, int32 whence);
+@compileFor(OS_WINDOWS)
+extern fn int64 _lseeki64(int32 fd, int64 offset, int32 whence);
+@compileFor(!OS_WINDOWS)
+unsafe fn int64 seekTo(int32 fd, int64 offset) { return lseek(fd: fd, offset: offset, whence: 0); }
+@compileFor(OS_WINDOWS)
+unsafe fn int64 seekTo(int32 fd, int64 offset) { return _lseeki64(fd: fd, offset: offset, whence: 0); }
+
+comptime int32 FILE_LIST = 1;
+comptime int32 FILE_READ = 2;
+comptime int32 FILE_SAVE = 3;
+comptime int32 CHOSEN_MANY = 1;     // a chooser's flags: it takes several files,
+comptime int32 CHOSEN_ASKED = 2;    // the program has not taken it yet (`takeFileRequest`),
+comptime int32 CHOSEN_OPEN = 4;     // and it has not been answered (`provideFiles`)
+
+// A file's size from the file system, -1 when it cannot be read.
+unsafe fn int64 sizeOf(const ref string path)
+{
+    Result<Metadata, IoError> m = stat(path: path);
+    return match (m) { case Ok(value: x): cast<int64>(x.size); case Err(error: e): -1; };
+}
+
+// Bytes `offset` to `offset + count` of the file at `path` (fewer at its end) into `into`, or why not.
+unsafe fn string readSlice(const ref string path, int64 offset, int32 count, ref DynamicArray<uint8> into)
+{
+    into.clear();
+    Result<File, IoError> opened = File.open(path: path, mode: OpenMode::Read);
+    File f = match (give opened) {
+        case Ok(value: x): give x;
+        case Err(error: e): {
+            string m = e.message();
+            return "${path}: ${m}";
+        }
+    };
+    if (offset > 0 && seekTo(fd: f.rawFd(), offset: offset) != offset) { return "${path}: cannot start at ${offset}"; }
+    isize want = cast<isize>(count);
+    isize i = 0;
+    while (i < want) {
+        into.add(item: 0ui8);
+        i = i + 1;
+    }
+    isize got = 0;
+    while (got < want) {
+        isize n = 0 - 1;
+        borrow into.viewMut() as all {
+            Result<isize, IoError> r = f.read(into: all.slice(from: got, count: want - got));
+            n = match (r) { case Ok(value: x): x; case Err(error: e): 0 - 1; };
+        }
+        if (n < 0) { return "${path}: the read failed"; }
+        if (n == 0) { break; }
+        got = got + n;
+    }
+    while (into.length() > got) { Optional<uint8> dropped = into.pop(); }
+    return "";
+}
+
+// The native leg's files (host.kama): every list, read and save request one context holds, and the events they raise
+// — kept apart from RmlUi's, and delivered after the document's own. Parallel columns, one row per handle.
+type resource FileStore {
+    int32 next;
+    DynamicArray<int32> handles;
+    DynamicArray<int32> kinds;                    // FILE_LIST, FILE_READ, FILE_SAVE
+    DynamicArray<DynamicArray<string>> paths;     // a list's files
+    DynamicArray<DynamicArray<int64>> sizes;      // … and their sizes, read when they were listed
+    DynamicArray<string> texts;                   // a chooser's `accept`, a read's error, a save's name
+    DynamicArray<int32> flags;                    // a chooser's CHOSEN_*; a save's 1 once taken
+    DynamicArray<DynamicArray<uint8>> bytes;      // a read's or a save's
+    DynamicArray<UiEvent> queue;                  // the files' events, waiting for `pollEvent`
+    DynamicArray<int32> listening;                // the bindings `bindElement` made listen: what hears a file drop
+    int32 chooser;                                // the list a chooser waits to fill, 0 for none
+
+    public ctor make()
+    {
+        this.next = 1;
+        this.handles = DynamicArray.empty();
+        this.kinds = DynamicArray.empty();
+        this.paths = DynamicArray.empty();
+        this.sizes = DynamicArray.empty();
+        this.texts = DynamicArray.empty();
+        this.flags = DynamicArray.empty();
+        this.bytes = DynamicArray.empty();
+        this.queue = DynamicArray.empty();
+        this.listening = DynamicArray.empty();
+        this.chooser = 0;
+    }
+
+    fn isize rowOf(int32 handle, int32 kind)
+    {
+        isize i = 0;
+        while (i < this.handles.length()) {
+            if (this.handles[i] == handle) {
+                if (this.kinds[i] == kind) { return i; }
+                return 0 - 1;
+            }
+            i = i + 1;
+        }
+        return 0 - 1;
+    }
+
+    fn int32 add(int32 kind)
+    {
+        int32 h = this.next;
+        this.next = this.next + 1;
+        this.handles.add(item: h);
+        this.kinds.add(item: kind);
+        this.paths.add(item: DynamicArray.empty());
+        this.sizes.add(item: DynamicArray.empty());
+        this.texts.add(item: "");
+        this.flags.add(item: 0);
+        this.bytes.add(item: DynamicArray.empty());
+        return h;
+    }
+
+    fn void forget(isize row)
+    {
+        int32 h = this.handles.remove(index: row);
+        int32 k = this.kinds.remove(index: row);
+        DynamicArray<string> p = this.paths.remove(index: row);
+        DynamicArray<int64> z = this.sizes.remove(index: row);
+        string t = this.texts.remove(index: row);
+        int32 f = this.flags.remove(index: row);
+        DynamicArray<uint8> b = this.bytes.remove(index: row);
+    }
+
+    unsafe fn void fill(isize row, const ref DynamicArray<string> paths)
+    {
+        isize i = 0;
+        while (i < paths.length()) {
+            this.paths[row].add(item: copy paths[i]);
+            this.sizes[row].add(item: sizeOf(path: paths[i]));
+            i = i + 1;
+        }
+    }
+
+    // A list of these files (their sizes read now).
+    public unsafe fn int32 list(const ref DynamicArray<string> paths)
+    {
+        int32 h = this.add(kind: FILE_LIST);
+        this.fill(row: this.rowOf(handle: h, kind: FILE_LIST), paths: paths);
+        return h;
+    }
+
+    // ---- the chooser ----
+
+    public fn int32 choose(const ref string accept, bool multiple)
+    {
+        if (this.chooser != 0) { return 0; }
+        int32 h = this.add(kind: FILE_LIST);
+        isize row = this.rowOf(handle: h, kind: FILE_LIST);
+        this.texts[row] = copy accept;
+        int32 f = CHOSEN_ASKED | CHOSEN_OPEN;
+        if (multiple) { f = f | CHOSEN_MANY; }
+        this.flags[row] = f;
+        this.chooser = h;
+        return h;
+    }
+
+    public fn int32 takeRequest()
+    {
+        isize i = 0;
+        while (i < this.handles.length()) {
+            if (this.kinds[i] == FILE_LIST && (this.flags[i] & CHOSEN_ASKED) != 0) {
+                this.flags[i] = this.flags[i] & ~CHOSEN_ASKED;
+                return this.handles[i];
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    public fn string accept(int32 files)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        if (row < 0) { return ""; }
+        return copy this.texts[row];
+    }
+
+    public fn bool multiple(int32 files)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        return row >= 0 && (this.flags[row] & CHOSEN_MANY) != 0;
+    }
+
+    // The answer: the paths chosen (none: cancelled; only the first when it takes one), then the `Files` event. Once.
+    public unsafe fn void provide(int32 files, const ref DynamicArray<string> paths)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        if (row < 0 || (this.flags[row] & CHOSEN_OPEN) == 0) { return; }
+        DynamicArray<string> chosen = DynamicArray.empty();
+        isize i = 0;
+        while (i < paths.length() && (i == 0 || (this.flags[row] & CHOSEN_MANY) != 0)) {
+            chosen.add(item: copy paths[i]);
+            i = i + 1;
+        }
+        this.fill(row: row, paths: chosen);
+        this.flags[row] = this.flags[row] & CHOSEN_MANY;
+        if (this.chooser == files) { this.chooser = 0; }
+        this.queue.add(item: UiEvent.make(kind: UiEventKind::Files, element: 0, target: 0, source: 0, key: 0, mods: 0,
+                                          files: files, atX: 0.0, atY: 0.0));
+    }
+
+    // ---- a list ----
+
+    public fn int32 count(int32 files)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        if (row < 0) { return 0; }
+        return cast<int32>(this.paths[row].length());
+    }
+
+    public fn string path(int32 files, int32 index)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        isize i = cast<isize>(index);
+        if (row < 0 || i < 0 || i >= this.paths[row].length()) { return ""; }
+        return copy this.paths[row][i];
+    }
+
+    public fn int64 size(int32 files, int32 index)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        isize i = cast<isize>(index);
+        if (row < 0 || i < 0 || i >= this.sizes[row].length()) { return -1; }
+        return this.sizes[row][i];
+    }
+
+    // A released chooser that is still open frees the program to ask again; its late answer is ignored.
+    public fn void release(int32 files)
+    {
+        isize row = this.rowOf(handle: files, kind: FILE_LIST);
+        if (row < 0) { return; }
+        if (this.chooser == files) { this.chooser = 0; }
+        this.forget(row: row);
+    }
+
+    // ---- a read: done at once, natively, and reported at the next poll as the web's is ----
+
+    public unsafe fn int32 read(int32 files, int32 index, int64 offset, int32 count)
+    {
+        string p = this.path(files: files, index: index);
+        if (p.isEmpty() || offset < 0 || count < 0) { return 0; }
+        int32 r = this.add(kind: FILE_READ);
+        isize row = this.rowOf(handle: r, kind: FILE_READ);
+        DynamicArray<uint8> got = DynamicArray.empty();
+        string why = readSlice(path: p, offset: offset, count: count, into: got);
+        this.bytes[row] = give got;
+        this.texts[row] = give why;
+        this.queue.add(item: UiEvent.make(kind: UiEventKind::Read, element: 0, target: 0, source: 0, key: 0, mods: 0,
+                                          files: r, atX: 0.0, atY: 0.0));
+        return r;
+    }
+
+    public fn bool takeRead(int32 read, ref DynamicArray<uint8> into)
+    {
+        into.clear();
+        isize row = this.rowOf(handle: read, kind: FILE_READ);
+        if (row < 0) { return false; }
+        bool ok = this.texts[row].isEmpty();
+        if (ok) {
+            DynamicArray<uint8> none = DynamicArray.empty();
+            DynamicArray<uint8> got = replace(place: ref this.bytes[row], with: give none);
+            into = give got;
+        }
+        this.forget(row: row);
+        return ok;
+    }
+
+    public fn string readError(int32 read)
+    {
+        isize row = this.rowOf(handle: read, kind: FILE_READ);
+        if (row < 0) { return ""; }
+        return copy this.texts[row];
+    }
+
+    // ---- a save: held until the program takes it ----
+
+    public fn void save(const ref string name, ConstView<uint8> bytes)
+    {
+        int32 h = this.add(kind: FILE_SAVE);
+        isize row = this.rowOf(handle: h, kind: FILE_SAVE);
+        this.texts[row] = copy name;
+        isize i = 0;
+        while (i < bytes.length()) {
+            this.bytes[row].add(item: bytes[i]);
+            i = i + 1;
+        }
+    }
+
+    public fn int32 takeSave()
+    {
+        isize i = 0;
+        while (i < this.handles.length()) {
+            if (this.kinds[i] == FILE_SAVE && this.flags[i] == 0) {
+                this.flags[i] = 1;
+                return this.handles[i];
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    public fn string saveName(int32 save)
+    {
+        isize row = this.rowOf(handle: save, kind: FILE_SAVE);
+        if (row < 0) { return ""; }
+        return copy this.texts[row];
+    }
+
+    public fn bool takeSaveBytes(int32 save, ref DynamicArray<uint8> into)
+    {
+        into.clear();
+        isize row = this.rowOf(handle: save, kind: FILE_SAVE);
+        if (row < 0) { return false; }
+        DynamicArray<uint8> none = DynamicArray.empty();
+        DynamicArray<uint8> got = replace(place: ref this.bytes[row], with: give none);
+        into = give got;
+        this.forget(row: row);
+        return true;
+    }
+
+    // ---- the events, and what hears a file drop ----
+
+    public fn void post(UiEvent ev) { this.queue.add(item: ev); }
+
+    public fn Optional<UiEvent> poll()
+    {
+        if (this.queue.length() == 0) { return Optional::None; }
+        UiEvent ev = this.queue.remove(index: 0);
+        return Optional::Some(value: ev);
+    }
+
+    // A new document: its drops and pastes go with it, a chooser's answer and a read's end stay (they answer the
+    // program), and no binding of the old one listens any more.
+    public fn void documentGone()
+    {
+        DynamicArray<UiEvent> kept = DynamicArray.empty();
+        isize i = 0;
+        while (i < this.queue.length()) {
+            bool keep = match (this.queue[i].kind) { case Files: true; case Read: true; case _: false; };
+            if (keep) { kept.add(item: this.queue[i]); }
+            i = i + 1;
+        }
+        this.queue = give kept;
+        this.listening.clear();
+    }
+
+    public fn void listen(int32 binding)
+    {
+        if (!this.listening.contains(item: binding)) { this.listening.add(item: binding); }
+    }
+
+    public fn bool listens(int32 binding) { return this.listening.contains(item: binding); }
+}
 
 // UI_KEY_* (GLFW's numbers) -> RmlUi's KeyIdentifier, or 0 for a key outside types.kama's table — which is DROPPED.
 // The letters, digits and function keys are runs in both numberings, so they map by offset.
@@ -135,13 +501,33 @@ comptime int32 TIP_TOP = 16;
 // ⚠️ A CLASS IS WRITTEN THROUGH THE `class` ATTRIBUTE (0.2.2), as a browser's `classList` writes it: RmlUi keeps a class
 // `setClass` toggled BESIDE the attributes, where serializing the element (`innerRml`) does not see it. RmlUi turns the
 // attribute into the class list itself.
+//
+// ⚠️ AND AN `<input>` GETS ITS TYPE BACK (CHANGED in 0.4.0). RmlUi gives an input its type as a class of its own —
+// `range`, `checkbox`, `text`… (ElementFormControlInput), beside the attribute — and a write of the attribute replaces
+// the whole class list, so a document's `input.range` rule stopped matching the moment a class was toggled on the
+// slider: a drag passing over one, or `setElementClass` on it, made it the size of a text field. It is set again here.
 unsafe fn void classOn(Element el, const ref string name, bool on)
 {
     string attr = "class";
     Optional<string> current = el.attribute(name: attr);
     string list = match (current) { case None: ""; case Some(value: s): copy s; };
     string next = toggled(list: list, name: name, on: on);
-    if (next != list) { el.setAttributeQuietly(name: attr, value: next); }
+    if (next == list) { return; }
+    el.setAttributeQuietly(name: attr, value: next);
+    if (el.tag() == "input") {
+        string own = inputClass(el: el);
+        el.setClass(name: own, on: true);
+    }
+}
+
+// The class RmlUi gives an `<input>` of its own: its type, where RmlUi knows the type, else `text`.
+unsafe fn string inputClass(Element el)
+{
+    Optional<string> t = el.attribute(name: "type");
+    string type = match (t) { case None: "text"; case Some(value: s): copy s; };
+    if (type == "password" || type == "radio" || type == "checkbox" || type == "range" || type == "submit" ||
+        type == "button") { return type; }
+    return "text";
 }
 
 // A form control: what has a value of its own (`elementText`), not text content.
@@ -216,6 +602,10 @@ type value UiContext implements UiHost {
     float32 pointerX;       // the pointer, from `mouseMove`: where the tooltip goes
     float32 pointerY;
     bool scrollMarked;      // a `scrollToEnd` or `scrollIntoView` waits for the next update (`followEnds`)
+    // (0.4.0) The files (host.kama), on the heap: made in `start` and released here as an `Owned` hands a value to a
+    // foreign owner (std::memory), borrowed in place through `store[0]`, and taken back and dropped in `close`. null
+    // while the UI has not started.
+    UnsafePtr<FileStore> store;
 
     // Start RmlUi, make a context `width` x `height` framebuffer pixels, and load `fontPath` ("" for none yet) as the
     // first face. A UI that will not start leaves `isOpen()` false, and every method then does nothing.
@@ -233,6 +623,7 @@ type value UiContext implements UiHost {
         this.pointerX = 0.0;
         this.pointerY = 0.0;
         this.scrollMarked = false;
+        this.store = null;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -253,6 +644,7 @@ type value UiContext implements UiHost {
         this.pointerX = 0.0;
         this.pointerY = 0.0;
         this.scrollMarked = false;
+        this.store = null;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -270,6 +662,8 @@ type value UiContext implements UiHost {
                     case Ok(value: c): {
                         this.ctx = c;
                         this.ready = 1;
+                        Owned<FileStore> files = new FileStore.make();
+                        this.store = files.release();
                         if (!fontPath.isEmpty()) { this.lib.loadFontFace(path: fontPath, fallback: false); }
                     }
                 };
@@ -306,6 +700,7 @@ type value UiContext implements UiHost {
         this.tipShown = false;
         this.tipQuiet = false;
         this.scrollMarked = false;
+        this.store[0].documentGone();
     }
 
     public unsafe fn bool loadDocument(const ref string path)
@@ -769,6 +1164,7 @@ type value UiContext implements UiHost {
                 binding.listen(event: dragdrop, flags: LISTEN_BUBBLE);
                 binding.listen(event: focus, flags: LISTEN_CAPTURE);
                 binding.listen(event: blur, flags: LISTEN_CAPTURE);
+                this.store[0].listen(binding: binding.handle());
                 := binding.handle();
             }
         };
@@ -903,7 +1299,7 @@ type value UiContext implements UiHost {
         while (true) {
             Optional<Event> next = this.ctx.pollEvent();
             match (next) {
-                case None: { return Optional::None; }
+                case None: { return this.store[0].poll(); }
                 case Some(value: ev): {
                     Optional<UiEvent> found = Optional::None;
                     if (ev.binding.isNone()) { found = this.own(ev: ev); } else { found = this.heard(ev: ev); }
@@ -920,30 +1316,39 @@ type value UiContext implements UiHost {
         int32 mods = uiMods(m: this.lib.eventModifiers());
         return match (ev.type) {
             case Click: Optional::Some(value: UiEvent.make(kind: UiEventKind::Click, element: element,
-                                                            target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods));
+                                                            target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods, files: 0, atX: 0.0, atY: 0.0));
             case Dblclick: Optional::Some(value: UiEvent.make(kind: UiEventKind::DoubleClick, element: element,
-                                                               target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods));
+                                                               target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods, files: 0, atX: 0.0, atY: 0.0));
             case Change: {
                 if (this.notAnEdit(ev: ev)) { return Optional::None; }
                 := Optional::Some(value: UiEvent.make(kind: UiEventKind::Change, element: element,
-                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0, files: 0, atX: 0.0, atY: 0.0));
             }
             case Focus: {
                 if (!focusable(el: ev.target)) { return Optional::None; }
                 := Optional::Some(value: UiEvent.make(kind: UiEventKind::Focus, element: element,
-                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0, files: 0, atX: 0.0, atY: 0.0));
             }
             case Blur: {
                 if (!focusable(el: ev.target)) { return Optional::None; }
                 := Optional::Some(value: UiEvent.make(kind: UiEventKind::Blur, element: element,
-                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0));
+                                                       target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0, files: 0, atX: 0.0, atY: 0.0));
             }
             case Dragdrop: {
                 string dragName = "drag_element";
                 Optional<Element> dragged = this.lib.eventElement(name: dragName);
                 int32 source = match (dragged) { case None: 0; case Some(value: d): this.named(el: d); };
-                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Drop, element: element,
-                                                       target: this.targetOf(ev: ev), source: source, key: 0, mods: mods));
+                int32 target = this.dropTargetOf(at: ev.target, stop: ev.element);
+                // Where the pointer was at the drop — RmlUi's own parameters, this poll's — not where it is now: the
+                // program may have moved it since.
+                string mx = "mouse_x";
+                string my = "mouse_y";
+                float32 px = cast<float32>(this.lib.eventInt(name: mx, fallback: cast<int32>(this.pointerX)));
+                float32 py = cast<float32>(this.lib.eventInt(name: my, fallback: cast<int32>(this.pointerY)));
+                float32 atX = this.within(handle: target, x: px, horizontal: true);
+                float32 atY = this.within(handle: target, x: py, horizontal: false);
+                := Optional::Some(value: UiEvent.make(kind: UiEventKind::Drop, element: element, target: target,
+                                                       source: source, key: 0, mods: mods, files: 0, atX: atX, atY: atY));
             }
             case _: Optional::None;
         };
@@ -962,7 +1367,7 @@ type value UiContext implements UiHost {
                 int32 mods = uiMods(m: this.lib.eventModifiers());
                 if (!reported(key: key, mods: mods)) { return Optional::None; }
                 return Optional::Some(value: UiEvent.make(kind: UiEventKind::Key, element: 0,
-                                                          target: this.targetOf(ev: ev), source: 0, key: key, mods: mods));
+                                                          target: this.targetOf(ev: ev), source: 0, key: key, mods: mods, files: 0, atX: 0.0, atY: 0.0));
             }
             case Scroll: { this.dismissTip(); }
             case Dragstart: {
@@ -970,7 +1375,7 @@ type value UiContext implements UiHost {
                 match (dragged) { case None: { } case Some(value: d): { classOn(el: d, name: dragging, on: true); } };
             }
             case Dragover: {
-                Element over = this.withId(el: ev.target);
+                Element over = this.zoneOf(el: ev.target);
                 if (over.isLive()) {
                     this.clearClass(name: dropTarget, except: over);
                     classOn(el: over, name: dropTarget, on: true);
@@ -979,7 +1384,7 @@ type value UiContext implements UiHost {
             case Dragout: {
                 // Left for good only if the pointer is outside it now: moving between the parts of one row raises a
                 // dragout on the part it leaves, which must not take the row's class off.
-                Element left = this.withId(el: ev.target);
+                Element left = this.zoneOf(el: ev.target);
                 if (left.isLive()) {
                     Rect r = left.rect(area: BoxArea::Border);
                     bool inside = this.pointerX >= r.x && this.pointerX < r.x + r.width &&
@@ -1128,5 +1533,224 @@ type value UiContext implements UiHost {
         this.ctx.destroy();
         this.lib.shutdown();
         this.ready = 0;
+        Owned<FileStore> back = Owned.adopt(raw: this.store);
+        this.store = null;
+    }
+
+    // ---- 0.4.0: drop zones and files (host.kama) ------------------------------------------------------------------
+
+    // `droppable="true"` with an id: a zone.
+    unsafe fn bool isZone(Element el)
+    {
+        if (el.id().isEmpty()) { return false; }
+        Optional<string> d = el.attribute(name: "droppable");
+        return match (d) { case None: false; case Some(value: v): v == "true"; };
+    }
+
+    // What is highlighted under the pointer: the nearest zone at or above `el`, else the nearest element with an id.
+    unsafe fn Element zoneOf(Element el)
+    {
+        Element at = el;
+        Element root = this.doc.root();
+        while (at.isLive()) {
+            if (this.isZone(el: at)) { return at; }
+            if (at.same(other: root)) { break; }
+            Optional<Element> up = at.parent();
+            match (up) { case None: { break; } case Some(value: p): { at = p; } };
+        }
+        return this.withId(el: el);
+    }
+
+    // A drop's target, from where it landed up to the element that heard it (inclusive): the nearest zone, else the
+    // nearest element with an id — as a handle, named as `targetOf` names one. 0 for neither.
+    unsafe fn int32 dropTargetOf(Element at, Element stop)
+    {
+        Element n = at;
+        while (n.isLive()) {
+            if (this.isZone(el: n)) { return this.findElement(elementId: n.id()); }
+            if (n.same(other: stop)) { break; }
+            Optional<Element> up = n.parent();
+            match (up) { case None: { break; } case Some(value: p): { n = p; } };
+        }
+        n = at;
+        while (n.isLive()) {
+            string id = n.id();
+            if (!id.isEmpty()) { return this.findElement(elementId: id); }
+            if (n.same(other: stop)) { return 0; }
+            Optional<Element> up = n.parent();
+            match (up) { case None: { return 0; } case Some(value: p): { n = p; } };
+        }
+        return 0;
+    }
+
+    // Where `x` (or a y, for `horizontal` false) lies across the handle's border box: 0 to 1, clamped; 0 for none.
+    unsafe fn float32 within(int32 handle, float32 x, bool horizontal)
+    {
+        UiRect r = this.elementRect(handle: handle);
+        float32 from = r.x;
+        float32 size = r.width;
+        if (!horizontal) { from = r.y; size = r.height; }
+        if (size <= 0.0) { return 0.0; }
+        float32 f = (x - from) / size;
+        if (f < 0.0) { return 0.0; }
+        if (f > 1.0) { return 1.0; }
+        return f;
+    }
+
+    // One at a time, and only with a document up, as on the web; the request waits for `takeFileRequest`.
+    public unsafe fn int32 chooseFiles(const ref string accept, bool multiple)
+    {
+        if (this.ready == 0 || !this.doc.isLive()) { return 0; }
+        return this.store[0].choose(accept: accept, multiple: multiple);
+    }
+
+    public unsafe fn int32 fileCount(int32 files)
+    {
+        if (this.ready == 0) { return 0; }
+        return this.store[0].count(files: files);
+    }
+
+    // The path's last part, as a browser's `File.name` is.
+    public unsafe fn string fileName(int32 files, int32 index)
+    {
+        string p = this.filePath(files: files, index: index);
+        if (p.isEmpty()) { return ""; }
+        Optional<string> name = fileName(path: p);
+        return match (name) { case None: copy p; case Some(value: n): copy n; };
+    }
+
+    public unsafe fn int64 fileSize(int32 files, int32 index)
+    {
+        if (this.ready == 0) { return -1; }
+        return this.store[0].size(files: files, index: index);
+    }
+
+    public unsafe fn string fileType(int32 files, int32 index)
+    {
+        string name = this.fileName(files: files, index: index);
+        if (name.isEmpty()) { return ""; }
+        return uiFileType(name: name);
+    }
+
+    public unsafe fn string filePath(int32 files, int32 index)
+    {
+        if (this.ready == 0) { return ""; }
+        return this.store[0].path(files: files, index: index);
+    }
+
+    public unsafe fn void releaseFiles(int32 files)
+    {
+        if (this.ready == 0) { return; }
+        this.store[0].release(files: files);
+    }
+
+    // Read at once, natively; the Read event comes at the next poll, as the web's comes when its promise settles.
+    public unsafe fn int32 readFile(int32 files, int32 index, int64 offset, int32 count)
+    {
+        if (this.ready == 0) { return 0; }
+        return this.store[0].read(files: files, index: index, offset: offset, count: count);
+    }
+
+    public unsafe fn bool readBytes(int32 read, ref DynamicArray<uint8> into)
+    {
+        if (this.ready == 0) { into.clear(); return false; }
+        return this.store[0].takeRead(read: read, into: into);
+    }
+
+    public unsafe fn string readError(int32 read)
+    {
+        if (this.ready == 0) { return ""; }
+        return this.store[0].readError(read: read);
+    }
+
+    // Held until the program takes it (`takeSaveRequest`) and shows its save dialog.
+    public unsafe fn bool saveFile(const ref string name, ConstView<uint8> bytes)
+    {
+        if (this.ready == 0) { return false; }
+        this.store[0].save(name: name, bytes: bytes);
+        return true;
+    }
+
+    public unsafe fn int32 takeFileRequest()
+    {
+        if (this.ready == 0) { return 0; }
+        return this.store[0].takeRequest();
+    }
+
+    public unsafe fn string fileRequestAccept(int32 files)
+    {
+        if (this.ready == 0) { return ""; }
+        return this.store[0].accept(files: files);
+    }
+
+    public unsafe fn bool fileRequestMultiple(int32 files)
+    {
+        if (this.ready == 0) { return false; }
+        return this.store[0].multiple(files: files);
+    }
+
+    public unsafe fn void provideFiles(int32 files, const ref DynamicArray<string> paths)
+    {
+        if (this.ready == 0) { return; }
+        this.store[0].provide(files: files, paths: paths);
+    }
+
+    // A drop on what lies at the point, heard by each bound ancestor in turn from the innermost — RmlUi's bubbling,
+    // which a drop from outside never goes through — all with one list. Nobody to hear it: the list is let go.
+    public unsafe fn void dropFiles(const ref DynamicArray<string> paths, float32 x, float32 y)
+    {
+        if (this.ready == 0 || !this.doc.isLive() || paths.length() == 0) { return; }
+        Optional<Element> hit = this.ctx.elementAtPoint(x: x, y: y);
+        Element at = match (hit) { case None: Element.fromHandle(handle: 0); case Some(value: e): e; };
+        if (!at.isLive()) { return; }
+        int32 list = this.store[0].list(paths: paths);
+        int32 heard = 0;
+        Element n = at;
+        Element root = this.doc.root();
+        while (n.isLive()) {
+            Optional<Binding> b = this.doc.bindingOf(element: n);
+            int32 binding = match (b) { case None: 0; case Some(value: found): found.handle(); };
+            if (binding != 0 && this.store[0].listens(binding: binding)) {
+                int32 target = this.dropTargetOf(at: at, stop: n);
+                float32 atX = this.within(handle: target, x: x, horizontal: true);
+                float32 atY = this.within(handle: target, x: y, horizontal: false);
+                this.store[0].post(ev: UiEvent.make(kind: UiEventKind::Drop, element: binding, target: target, source: 0,
+                                                    key: 0, mods: 0, files: list, atX: atX, atY: atY));
+                heard = heard + 1;
+            }
+            if (n.same(other: root)) { break; }
+            Optional<Element> up = n.parent();
+            match (up) { case None: { break; } case Some(value: p): { n = p; } };
+        }
+        if (heard == 0) { this.store[0].release(files: list); }
+    }
+
+    // A paste is the document's, as a key is: `target` the focused element.
+    public unsafe fn void pasteFiles(const ref DynamicArray<string> paths)
+    {
+        if (this.ready == 0 || !this.doc.isLive() || paths.length() == 0) { return; }
+        int32 list = this.store[0].list(paths: paths);
+        Optional<Element> f = this.doc.focused();
+        int32 target = match (f) { case None: 0; case Some(value: e): this.named(el: e); };
+        this.store[0].post(ev: UiEvent.make(kind: UiEventKind::Paste, element: 0, target: target, source: 0, key: 0,
+                                            mods: 0, files: list, atX: 0.0, atY: 0.0));
+    }
+
+    public unsafe fn int32 takeSaveRequest()
+    {
+        if (this.ready == 0) { return 0; }
+        return this.store[0].takeSave();
+    }
+
+    public unsafe fn string saveRequestName(int32 save)
+    {
+        if (this.ready == 0) { return ""; }
+        return this.store[0].saveName(save: save);
+    }
+
+    public unsafe fn bool saveRequestBytes(int32 save, ref DynamicArray<uint8> into)
+    {
+        if (this.ready == 0) { into.clear(); return false; }
+        return this.store[0].takeSaveBytes(save: save, into: into);
     }
 }

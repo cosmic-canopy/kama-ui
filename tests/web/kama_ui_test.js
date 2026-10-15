@@ -2,6 +2,16 @@
 mergeInto(LibraryManager.library, {
     $KamaUiTest: {
         held: null,   // kama_ui_test_hold
+        saved: null,  // kama_ui_test_spy_saves: the last download stopped, "name size type"
+        spying: false,
+        blob: null,
+        // The two test files, fresh each time (a File is consumed by nothing, but a drop's list must be its own).
+        twoFiles: function () {
+            var dt = new DataTransfer();
+            dt.items.add(new File(['alpha'], 'a.txt', { type: 'text/plain' }));
+            dt.items.add(new File([new Uint8Array([80, 78, 71, 33])], 'b.png', { type: 'image/png' }));
+            return dt;
+        },
         drag: null,   // kama_ui_test_drag_begin, for drag_end
         copied: null, // kama_ui_test_spy_clipboard
         // What a browser does with a press it was not told to skip: it focuses the nearest focusable element at or
@@ -255,5 +265,106 @@ mergeInto(LibraryManager.library, {
                                body: JSON.stringify({ run: run, failed: failed, verdict: verdict, output: printed }) })
                 .then(function () { window.close(); }, function () { });
         } catch (e) { }
+    },
+
+    // ---- 0.4.0: files ----
+
+    kama_ui_test_drop_files__deps: ['$KamaUiTest'],
+    kama_ui_test_drop_files: function (x, y, how) {
+        var r = KamaUiTest.ratio();
+        var cx = x / r, cy = y / r;
+        var el = document.elementFromPoint(cx, cy);
+        if (!el) return 0;
+        var dt;
+        if (how === 4) {
+            dt = new DataTransfer();
+            dt.setData('text/plain', 'just text');
+        } else {
+            dt = KamaUiTest.twoFiles();
+        }
+        var init = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, dataTransfer: dt };
+        if (how === 3) {
+            el.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true, view: window, clientX: cx,
+                                                           clientY: cy, dataTransfer: dt, relatedTarget: null }));
+            return 1;
+        }
+        el.dispatchEvent(new DragEvent('dragenter', init));
+        el.dispatchEvent(new DragEvent('dragover', init));
+        if (how === 2 || how === 4) el.dispatchEvent(new DragEvent('drop', init));
+        return 1;
+    },
+
+    kama_ui_test_allow_chooser: function () {
+        try {
+            Object.defineProperty(navigator, 'userActivation', { value: { isActive: true, hasBeenActive: true },
+                                                                configurable: true });
+        } catch (e) { }
+    },
+
+    kama_ui_test_chooser_is__deps: ['$KamaUi'],
+    kama_ui_test_chooser_is: function (acceptPtr, multiple) {
+        var h = KamaUi.chooser;
+        var entry = h && KamaUi.files[h];
+        var input = entry && entry.input;
+        if (!input || !input.isConnected || input.type !== 'file') return 0;
+        return (input.accept === UTF8ToString(acceptPtr) && input.multiple === (multiple !== 0)) ? 1 : 0;
+    },
+
+    // As the browser answers: the files on the input, then its `change`; or its `cancel`.
+    kama_ui_test_answer_chooser__deps: ['$KamaUi', '$KamaUiTest'],
+    kama_ui_test_answer_chooser: function (cancel) {
+        var h = KamaUi.chooser;
+        var input = h && KamaUi.files[h] && KamaUi.files[h].input;
+        if (!input) return 0;
+        if (cancel) {
+            input.dispatchEvent(new Event('cancel'));
+            return 1;
+        }
+        input.files = KamaUiTest.twoFiles().files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return 1;
+    },
+
+    kama_ui_test_paste_files: function () {
+        var dt = new DataTransfer();
+        dt.items.add(new File(['alpha'], 'a.txt', { type: 'text/plain' }));
+        var target = document.activeElement || document.body;
+        // ⚠️ Firefox keeps none of a script's files in a ClipboardEvent's own `clipboardData` (it takes strings only), so
+        // the event is given the transfer a real paste carries, on the event itself.
+        var ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'clipboardData', { value: dt });
+        target.dispatchEvent(ev);
+        return 1;
+    },
+
+    // A download is a click on an `<a download>`: stopped here, in the capture phase, with what it would have saved.
+    kama_ui_test_spy_saves__deps: ['$KamaUiTest'],
+    kama_ui_test_spy_saves: function () {
+        KamaUiTest.saved = null;
+        if (KamaUiTest.spying) return;
+        KamaUiTest.spying = true;
+        var make = URL.createObjectURL;
+        URL.createObjectURL = function (blob) { KamaUiTest.blob = blob; return make.call(URL, blob); };
+        document.addEventListener('click', function (e) {
+            var a = e.target;
+            if (!a || a.tagName !== 'A' || !a.hasAttribute('download')) return;
+            e.preventDefault();
+            var b = KamaUiTest.blob;
+            KamaUiTest.saved = a.download + ' ' + (b ? b.size : -1) + ' ' + (b ? b.type : '');
+        }, true);
+    },
+
+    kama_ui_test_saved__deps: ['$KamaUiTest', '$stringToUTF8', '$lengthBytesUTF8'],
+    kama_ui_test_saved: function (buf, capacity) {
+        var s = KamaUiTest.saved || '';
+        if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
+        return lengthBytesUTF8(s);
+    },
+
+    kama_ui_test_bridge_is: function (files, index, namePtr) {
+        var f = Module['kamaUiFile'] ? Module['kamaUiFile'](files, index) : undefined;
+        var want = UTF8ToString(namePtr);
+        if (want === '') return f === null ? 1 : 0;
+        return (f instanceof File && f.name === want) ? 1 : 0;
     }
 });

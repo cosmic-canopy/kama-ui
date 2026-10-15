@@ -5,14 +5,18 @@ file @compileFor(!ARCH_WASM32);
 
 import {
     Tally, check, section, Seen, collect, press,
-    core::println,
-    ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect,
+    core::println, core::envOr,
+    ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect, ui::uiFileType,
     ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE, ui::UI_KEY_A, ui::UI_KEY_C,
     ui::UI_KEY_V, ui::UI_MOD_CTRL,
+    std::collections::DynamicArray,
+    std::fs::writeText, std::fs::createDirAll, std::fs::remove, std::io::IoError,
+    std::process::currentProcessId,
 };
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
     typeInto, pick, legTests, pageLegTests, report,
+    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks,
 };
 
 // RmlUi's sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence (tests/fonts/SOURCES).
@@ -221,6 +225,111 @@ fn void pageLegTests(ref Tally t, ref UiContext ui, int32 page)
     UiRect resized = ui.elementRect(handle: page);
     check(t: t, ok: resized.width == 1024.0 && resized.height == 700.0,
           what: "...and reflows to the window's new size (${resized.width} x ${resized.height})");
+}
+
+// ---- files (0.4.0): natively a file is a path, and the program forwards what its window and dialogs give it ----
+
+// This run's folder of test files: a.txt is "alpha", b.png the four bytes "PNG!".
+unsafe fn string testDir()
+{
+    string tmp = envOr(name: "TMPDIR", dflt: "/tmp");
+    int32 pid = currentProcessId();
+    return "${tmp}/kama-ui-files-${pid}";
+}
+
+unsafe fn DynamicArray<string> testPaths(bool both)
+{
+    string dir = testDir();
+    Result<Unit, IoError> made = createDirAll(path: dir);
+    string a = "${dir}/a.txt";
+    string b = "${dir}/b.png";
+    Result<isize, IoError> wa = writeText(path: a, text: "alpha");
+    Result<isize, IoError> wb = writeText(path: b, text: "PNG!");
+    DynamicArray<string> paths = DynamicArray.empty();
+    paths.add(item: give a);
+    if (both) { paths.add(item: copy b); }
+    return paths;
+}
+
+// The window's drop, forwarded as the program forwards it.
+unsafe fn bool dropTestFiles(ref UiContext ui, float32 x, float32 y)
+{
+    DynamicArray<string> paths = testPaths(both: true);
+    ui.dropFiles(paths: paths, x: x, y: y);
+    return true;
+}
+
+// Natively a chooser waits for the program, which needs no gesture.
+fn void allowChooser() { }
+
+// The program's half: the request taken once, as it was asked, then answered with the files (or none).
+unsafe fn bool answerChooser(ref UiContext ui, int32 files, const ref string accept, bool multiple, bool cancel)
+{
+    int32 asked = ui.takeFileRequest();
+    if (asked != files || ui.takeFileRequest() != 0) { return false; }
+    if (ui.fileRequestAccept(files: files) != accept || ui.fileRequestMultiple(files: files) != multiple) { return false; }
+    DynamicArray<string> paths = DynamicArray.empty();
+    if (!cancel) { paths = testPaths(both: true); }
+    ui.provideFiles(files: files, paths: paths);
+    return true;
+}
+
+unsafe fn bool pasteTestFiles(ref UiContext ui)
+{
+    DynamicArray<string> paths = testPaths(both: false);
+    ui.pasteFiles(paths: paths);
+    return true;
+}
+
+fn void spySaves() { }
+
+// What the program would write: the request's name, its bytes, and the type the name gives — taken once.
+unsafe fn string savedAs(ref UiContext ui)
+{
+    int32 save = ui.takeSaveRequest();
+    if (save == 0) { return "(none)"; }
+    string name = ui.saveRequestName(save: save);
+    DynamicArray<uint8> bytes = DynamicArray.empty();
+    bool took = ui.saveRequestBytes(save: save, into: bytes);
+    isize n = bytes.length();
+    string type = uiFileType(name: name);
+    if (!took || ui.takeSaveRequest() != 0) { return "(taken twice)"; }
+    return "${name} ${n} ${type}";
+}
+
+// What only this leg has: a file's path; a chooser for one file keeping the first it is given; a read of a file
+// gone from the disk, failing with its reason. Nothing here polls: the reads begun before are still queued.
+unsafe fn void fileLegChecks(ref Tally t, ref UiContext ui, int32 list, int32 zone, float32 x, float32 y)
+{
+    section(what: "native: a file is its path");
+    string p = ui.filePath(files: list, index: 0);
+    check(t: t, ok: p.endsWith(suffix: "/a.txt") && p.startsWith(prefix: "/"), what: "filePath is the absolute path given ('${p}')");
+
+    section(what: "native: a chooser for one file keeps the first");
+    int32 one = ui.chooseFiles(accept: "", multiple: false);
+    bool answered = answerChooser(ui: ui, files: one, accept: "", multiple: false, cancel: false);
+    int32 kept = ui.fileCount(files: one);
+    check(t: t, ok: answered && kept == 1, what: "two paths given, one kept (${kept})");
+    ui.releaseFiles(files: one);
+
+    section(what: "native: a read of a file that went away fails, saying why");
+    string dir = testDir();
+    string gone = "${dir}/gone.txt";
+    Result<isize, IoError> w = writeText(path: gone, text: "soon gone");
+    DynamicArray<string> paths = DynamicArray.empty();
+    paths.add(item: copy gone);
+    int32 lone = ui.chooseFiles(accept: "", multiple: false);
+    int32 asked = ui.takeFileRequest();
+    ui.provideFiles(files: lone, paths: paths);
+    Result<Unit, IoError> rm = remove(path: gone);
+    int32 r = ui.readFile(files: lone, index: 0, offset: 0, count: 4);
+    DynamicArray<uint8> into = DynamicArray.empty();
+    string why = ui.readError(read: r);
+    bool read = ui.readBytes(read: r, into: into);
+    check(t: t, ok: r != 0 && !read && into.length() == 0 && why.contains(substring: "gone.txt"),
+          what: "readBytes is false and readError names the file ('${why}')");
+    ui.releaseFiles(files: lone);
+    check(t: t, ok: ui.takeSaveRequest() == 0, what: "with no save offered there is no save request");
 }
 
 fn int32 report(ref Tally t)

@@ -150,6 +150,9 @@ fn string kindName(UiEventKind k)
         case Focus: "Focus";
         case Blur: "Blur";
         case Drop: "Drop";
+        case Files: "Files";
+        case Paste: "Paste";
+        case Read: "Read";
     };
 }
 
@@ -632,6 +635,74 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: droppedC.drops == 2 && droppedC.first == aName && droppedC.firstTarget == aName && droppedC.second == list &&
                     droppedC.firstSource == rowC,
           what: "an appended row with `draggable` drags too, onto the first row's text: bound, it hears the drop before the list (${droppedC.drops})");
+
+    section(what: "the seam: drop zones and where a drop landed (0.4.0)");
+    int32 zones = ui.bindElement(elementId: "zones");
+    int32 zone = ui.findElement(elementId: "zone");
+    int32 zoneA = ui.findElement(elementId: "zone-a");
+    UiRect zr = ui.elementRect(handle: zone);
+    UiRect zar = ui.elementRect(handle: zoneA);
+    collect(ui: ui);
+    UiRect ra = ui.elementRect(handle: rowA);
+    // The drag passes over the range on its way: a class on it must leave its own (RmlUi's `range`) alone.
+    dragBegin(ui: ui, fromX: dragX, fromY: ra.y + 12.0, toX: zar.x + 30.0, toY: zar.y + 12.0);
+    collect(ui: ui);
+    ui.update();
+    UiRect zoneOver = ui.elementRect(handle: zone);
+    UiRect innerOver = ui.elementRect(handle: zoneA);
+    check(t: t, ok: zoneOver.width == 290.0 && innerOver.width != 100.0,
+          what: "dragged over a zone's row with an id, the ZONE has `ui-drop-target`, not the row (${zoneOver.width}, ${innerOver.width})");
+    dragEnd(ui: ui);
+    UiEvent onTop = UiEvent.make(kind: UiEventKind::None, element: 0, target: 0, source: 0, key: 0, mods: 0, files: 0,
+                                 atX: 0.0, atY: 0.0);
+    int32 drops = 0;
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool d = match (ev.kind) { case Drop: true; case _: false; };
+                if (d) { drops = drops + 1; onTop = ev; }
+            }
+        };
+    }
+    check(t: t, ok: drops == 1 && onTop.element == zones && onTop.target == zone && onTop.source == rowA,
+          what: "the drop names the zone, not the row under the pointer (${drops}, target ${onTop.target}, zone ${zone})");
+    check(t: t, ok: onTop.atY > 0.1 && onTop.atY < 0.5 && onTop.atX > 0.0 && onTop.atX < 0.25,
+          what: "...and says where in it: its top half, near its left (${onTop.atX}, ${onTop.atY})");
+    ui.update();
+    UiRect levelAfter = ui.elementRect(handle: level);
+    UiRect raAfter = ui.elementRect(handle: rowA);
+    check(t: t, ok: levelAfter.height == 16.0 && raAfter.y == ra.y,
+          what: "the range a drag passed over keeps its own styling, and nothing below it moved (${levelAfter.height}, ${raAfter.y})");
+    dragBegin(ui: ui, fromX: dragX, fromY: ra.y + 12.0, toX: zr.x + 200.0, toY: zr.y + 40.0);
+    dragEnd(ui: ui);
+    // The pointer moves on before the poll: where the drop landed is the drop's, not the pointer's now.
+    injectHover(ui: ui, x: 4.0, y: 4.0);
+    UiEvent onBottom = onTop;
+    int32 bottoms = 0;
+    more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool d = match (ev.kind) { case Drop: true; case _: false; };
+                if (d) { onBottom = ev; bottoms = bottoms + 1; }
+            }
+        };
+    }
+    check(t: t, ok: bottoms == 1 && onBottom.target == zone && onBottom.atY > 0.6 && onBottom.atX > 0.6,
+          what: "a drop on its bottom right says so (${bottoms}: ${onBottom.atX}, ${onBottom.atY})");
+    ui.update();
+    UiRect zoneAfter = ui.elementRect(handle: zone);
+    check(t: t, ok: zoneAfter.width == 280.0, what: "...and the zone's class is gone (${zoneAfter.width})");
+    ui.setElementClass(handle: level, name: "picked", on: true);
+    ui.update();
+    UiRect levelClassed = ui.elementRect(handle: level);
+    ui.setElementClass(handle: level, name: "picked", on: false);
+    check(t: t, ok: levelClassed.height == 16.0, what: "a class set on a range keeps its own too (${levelClassed.height})");
 
     section(what: "the seam: plain text, never parsed");
     string plain = "<b>a & b</b> stays text";

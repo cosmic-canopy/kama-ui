@@ -5,6 +5,9 @@
 // checked state, an uncapped `element_text`, and bindings that follow their id across rewrites (`$KamaUi.el`). 0.3.0
 // added the page-level listeners (`install`: keys and claims, hover and the tooltip, drag and drop), more event kinds,
 // titles held as `data-kama-ui-title`, children counted and removed, plain text, scrolling into view and the clipboard.
+// 0.4.0 added drop zones (`droppable="true"`) and where a drop landed, and files: chosen (`<input type=file>`), dropped
+// from outside, pasted, read in slices and offered as downloads — each a browser `File` held here, never copied into
+// the program until a read asks.
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -47,6 +50,11 @@ mergeInto(LibraryManager.library, {
         tipQuiet: false,
         imageFrom: '',     // kama_ui_web_set_image_rewrite: `<img src` ending in this ...
         imageTo: '',       // ... is rewritten to end in this, before the browser parses the markup
+        files: {},         // (0.4.0) a file list's handle -> {list: [File], accept, multiple, input}
+        reads: {},         // (0.4.0) a read's handle -> {bytes: Uint8Array | null, error, done}
+        nextFile: 1,       // the next list or read handle (one numbering, as natively)
+        chooser: 0,        // the list a chooser that is open will fill, 0 for none (one at a time)
+        chooserLeft: false,// the window lost the focus to the chooser's dialog (the cancel fallback, `onFocusBack`)
 
         // ⚠️ IN THE STRING, BEFORE `innerHTML`, NOT ON THE ELEMENTS AFTER IT: the browser starts fetching an
         // `<img src>` the moment it parses one, so rewriting the DOM afterwards would fetch the native file first —
@@ -128,7 +136,8 @@ mergeInto(LibraryManager.library, {
         },
 
         // What a DOM event is to the seam: 1 a click, 2 a change, 3 a double click, 5 focus, 6 blur, 7 a drop, 0
-        // nothing (4, a key, comes from `onKey`, not from a binding).
+        // nothing (4, a key, comes from `onKey`, not from a binding; 8 a chooser's answer, 9 a paste of files and 10 a
+        // finished read come from the package's own listeners, 0.4.0).
         //
         // ⚠️ A DOUBLE CLICK IS THE SECOND PRESS (`mousedown` with `detail` 2), NOT THE BROWSER'S `dblclick`, which
         // arrives after the second click: RmlUi raises its own on the second press, before that click, and the legs
@@ -169,12 +178,24 @@ mergeInto(LibraryManager.library, {
                     var kind = KamaUi.kindOf(e);
                     if (!kind) return;
                     var rec = { kind: kind, handle: handle, target: e.target, current: e.currentTarget, source: null,
-                                key: 0, mods: (kind === 1 || kind === 3 || kind === 7) ? KamaUi.modsOf(e) : 0 };
+                                key: 0, mods: (kind === 1 || kind === 3 || kind === 7) ? KamaUi.modsOf(e) : 0,
+                                files: 0, x: 0, y: 0 };
                     if (kind === 7) {
                         var src = KamaUi.dragSource;
-                        if (!src || src === e.currentTarget || src.contains(e.currentTarget)) return;
-                        rec.target = KamaUi.dropElement(e);
-                        rec.source = src;
+                        rec.x = e.clientX;
+                        rec.y = e.clientY;
+                        if (src) {
+                            if (src === e.currentTarget || src.contains(e.currentTarget)) return;
+                            rec.target = KamaUi.dropElement(e);
+                            rec.source = src;
+                        } else {
+                            // (0.4.0) Files from outside the page: one list for the whole drop, however many bound
+                            // ancestors hear it. Anything else dragged in from outside (text, a link) is no drop.
+                            var list = KamaUi.dropList(e);
+                            if (!list) return;
+                            rec.files = list;
+                            if (rec.target && rec.target.nodeType !== 1) rec.target = rec.target.parentElement;
+                        }
                     }
                     KamaUi.events.push(rec);
                 };
@@ -271,6 +292,78 @@ mergeInto(LibraryManager.library, {
             return src.parentElement;
         },
 
+        // ---- 0.4.0: drop zones and files ----
+
+        // `droppable="true"` with an id: a zone (host.kama).
+        isZone: function (n) {
+            return n && n.nodeType === 1 && n.id && n.getAttribute('droppable') === 'true';
+        },
+
+        // What is highlighted under the pointer: the nearest zone at or above `el`, else the nearest element with an id.
+        zoneOf: function (el) {
+            if (el && el.nodeType !== 1) el = el.parentElement;
+            for (var n = el; n && KamaUi.root && n !== KamaUi.root; n = n.parentElement) {
+                if (KamaUi.isZone(n)) return KamaUi.root.contains(n) ? n : null;
+            }
+            return KamaUi.withId(el);
+        },
+
+        // A drop's zone, walked from where it landed up to the element that heard it (inclusive); null for none.
+        zoneUpTo: function (el, stop) {
+            for (var n = el; n && KamaUi.root && n !== KamaUi.root; n = n.parentElement) {
+                if (KamaUi.isZone(n)) return n;
+                if (n === stop) return null;
+            }
+            return null;
+        },
+
+        // Is this drag carrying files from outside the page (`dataTransfer.types` holds "Files")?
+        carriesFiles: function (e) {
+            var t = e && e.dataTransfer && e.dataTransfer.types;
+            if (!t) return false;
+            for (var k = 0; k < t.length; k++) if (t[k] === 'Files') return true;
+            return false;
+        },
+
+        newList: function (list) {
+            var h = KamaUi.nextFile++;
+            KamaUi.files[h] = { list: Array.prototype.slice.call(list || []), accept: '', multiple: false, input: null };
+            return h;
+        },
+
+        // The list a drop of files carries, made once per drop: every bound ancestor hearing it shares it. 0 for a drop
+        // with no file in it.
+        dropList: function (e) {
+            if (e.__kamaUiFiles) return e.__kamaUiFiles;
+            var f = e.dataTransfer && e.dataTransfer.files;
+            if (!f || f.length === 0) return 0;
+            e.__kamaUiFiles = KamaUi.newList(f);
+            return e.__kamaUiFiles;
+        },
+
+        // Where a point lies in an element's border box, 0 to 1 on each axis (clamped), for a Drop's atX and atY.
+        within: function (el, x, y) {
+            if (!el) return [0, 0];
+            var b = el.getBoundingClientRect();
+            var fx = b.width > 0 ? (x - b.left) / b.width : 0;
+            var fy = b.height > 0 ? (y - b.top) / b.height : 0;
+            return [Math.max(0, Math.min(1, fx)), Math.max(0, Math.min(1, fy))];
+        },
+
+        // The chooser answered (its files, or none: cancelled). Ignored once its list was released.
+        answer: function (h, list) {
+            if (KamaUi.chooser !== h) return;
+            KamaUi.chooser = 0;
+            KamaUi.chooserLeft = false;
+            var entry = KamaUi.files[h];
+            if (!entry) return;
+            if (entry.input && entry.input.parentNode) entry.input.parentNode.removeChild(entry.input);
+            entry.input = null;
+            entry.list = Array.prototype.slice.call(list || []);
+            KamaUi.events.push({ kind: 8, handle: 0, target: null, current: null, source: null, key: 0, mods: 0,
+                                 files: h, x: 0, y: 0 });
+        },
+
         clearClass: function (name, except) {
             if (!KamaUi.root) return;
             var list = KamaUi.root.querySelectorAll('.' + name);
@@ -287,6 +380,26 @@ mergeInto(LibraryManager.library, {
                 if (!el.hasAttribute('title')) continue;
                 el.setAttribute('data-kama-ui-title', el.getAttribute('title'));
                 el.removeAttribute('title');
+            }
+        },
+
+        // (0.4.0) RmlUi gives every `<input>` its type as a class of its own (`range`, `checkbox`, `text`…), so a document
+        // styles `input.range`; a browser gives none, and the same rule matched natively only. Each inserted input gets
+        // it here too, as RmlUi names it: its type where RmlUi knows it, else `text`.
+        inputClass: function (el) {
+            var t = (el.getAttribute('type') || 'text').toLowerCase();
+            var known = { password: 1, radio: 1, checkbox: 1, range: 1, submit: 1, button: 1 };
+            return known[t] ? t : 'text';
+        },
+        typeClasses: function (node) {
+            if (!node || node.nodeType !== 1) return;
+            var list = node.tagName === 'INPUT' ? [node] : [];
+            list = list.concat(Array.prototype.slice.call(node.querySelectorAll('input')));
+            for (var k = 0; k < list.length; k++) {
+                var el = list[k];
+                if (el.__kamaUiType && el.__kamaUiType !== KamaUi.inputClass(el)) el.classList.remove(el.__kamaUiType);
+                el.__kamaUiType = KamaUi.inputClass(el);
+                el.classList.add(el.__kamaUiType);
             }
         },
 
@@ -398,21 +511,46 @@ mergeInto(LibraryManager.library, {
             src.classList.add('ui-dragging');
             KamaUi.dismiss();
         },
-        // Every element of the document takes a drop, as natively: the default (refusing it) is prevented.
+        // Every element of the document takes a drop, as natively: the default (refusing it) is prevented. CHANGED
+        // (0.4.0): files dragged in from outside are taken too, and what is highlighted is the zone under the pointer.
         onDragOver: function (e) {
-            if (!KamaUi.dragSource) return;
+            var files = !KamaUi.dragSource && KamaUi.carriesFiles(e);
+            if (!KamaUi.dragSource && !files) return;
             e.preventDefault();
-            if (e.dataTransfer) { try { e.dataTransfer.dropEffect = 'move'; } catch (x) { } }
-            var over = KamaUi.withId(KamaUi.dropElement(e));
+            if (e.dataTransfer) { try { e.dataTransfer.dropEffect = files ? 'copy' : 'move'; } catch (x) { } }
+            var over = KamaUi.zoneOf(files ? e.target : KamaUi.dropElement(e));
             KamaUi.clearClass('ui-drop-target', over);
             if (over) over.classList.add('ui-drop-target');
         },
         onDragLeave: function (e) {
-            if (!KamaUi.dragSource) return;
+            if (!KamaUi.dragSource && !KamaUi.carriesFiles(e)) return;
             if (!e.relatedTarget || !KamaUi.root.contains(e.relatedTarget)) KamaUi.clearClass('ui-drop-target', null);
         },
-        // Firefox opens dropped text as a page unless the drop's default is prevented.
-        onDropFirst: function (e) { if (KamaUi.dragSource) e.preventDefault(); },
+        // Firefox opens dropped text as a page unless the drop's default is prevented, and every browser opens a dropped
+        // file: the page would be gone.
+        onDropFirst: function (e) { if (KamaUi.dragSource || KamaUi.carriesFiles(e)) e.preventDefault(); },
+        // (0.4.0) Outside the document too (the canvas, the page around it): a file dropped anywhere in the window is
+        // never opened as a page while a document is up.
+        onWindowDrag: function (e) {
+            if (KamaUi.loaded && KamaUi.carriesFiles(e)) e.preventDefault();
+        },
+        // (0.4.0) Files on the clipboard as the person pastes: a Paste, the document's, as a key is.
+        onPaste: function (e) {
+            if (!KamaUi.loaded) return;
+            var d = e.clipboardData;
+            if (!d || !d.files || d.files.length === 0) return;
+            var h = KamaUi.newList(d.files);
+            KamaUi.events.push({ kind: 9, handle: 0, target: document.activeElement, current: null, source: null, key: 0,
+                                 mods: 0, files: h, x: 0, y: 0 });
+        },
+        // (0.4.0) A browser with no `cancel` event on a file input says nothing when the chooser is closed unanswered.
+        // Its dialog takes the window's focus, and gives it back when it closes: no answer a moment later is a cancel.
+        onBlurAway: function () { if (KamaUi.chooser) KamaUi.chooserLeft = true; },
+        onFocusBack: function () {
+            var h = KamaUi.chooser;
+            if (!h || !KamaUi.chooserLeft) return;
+            setTimeout(function () { if (KamaUi.chooser === h) KamaUi.answer(h, []); }, 1000);
+        },
         onDropLast: function () { KamaUi.clearClass('ui-drop-target', null); },
         onDragEnd: function () {
             KamaUi.clearClass('ui-dragging', null);
@@ -437,6 +575,11 @@ mergeInto(LibraryManager.library, {
             r.addEventListener('drop', KamaUi.onDropFirst, true);
             r.addEventListener('drop', KamaUi.onDropLast);
             r.addEventListener('dragend', KamaUi.onDragEnd, true);
+            window.addEventListener('dragover', KamaUi.onWindowDrag);
+            window.addEventListener('drop', KamaUi.onWindowDrag);
+            window.addEventListener('paste', KamaUi.onPaste, true);
+            window.addEventListener('blur', KamaUi.onBlurAway);
+            window.addEventListener('focus', KamaUi.onFocusBack);
         },
 
         // The element a handle names NOW, or null. ⚠️ EVERY ENTRY POINT GOES THROUGH THIS, never `els[h - 1]` directly:
@@ -479,6 +622,11 @@ mergeInto(LibraryManager.library, {
             var n = ev.target;
             if (n && n.nodeType !== 1) n = n.parentElement;
             if (!n || !KamaUi.root || !KamaUi.root.contains(n)) return 0;
+            // (0.4.0) A drop names its zone, when one lies between where it landed and the element that heard it.
+            if (ev.kind === 7) {
+                var z = KamaUi.zoneUpTo(n, ev.current);
+                if (z) return KamaUi.name(z.id, z);
+            }
             for (; n && n !== KamaUi.root; n = n.parentElement) {
                 if (n.id) return KamaUi.name(n.id, n);
                 if (n === ev.current) return 0;
@@ -490,12 +638,13 @@ mergeInto(LibraryManager.library, {
         // RmlUi listeners here too, and for a sharper reason: over there a listener outliving its
         // element is a use-after-free one frame later. Ours would merely leak, which is exactly why
         // it is worth doing deliberately rather than relying on the difference.
+        // CHANGED (0.4.0): a chooser's answer and a finished read stay queued — they answer the program, not the document.
         clearBindings: function () {
             for (var i = 0; i < KamaUi.els.length; i++) KamaUi.release(i);
             KamaUi.els = [];
             KamaUi.ids = [];
             KamaUi.listeners = [];
-            KamaUi.events = [];
+            KamaUi.events = KamaUi.events.slice(KamaUi.head).filter(function (ev) { return ev.kind === 8 || ev.kind === 10; });
             KamaUi.head = 0;
         }
     },
@@ -554,6 +703,12 @@ mergeInto(LibraryManager.library, {
         }
         KamaUi.clearBindings();
         KamaUi.install();
+        // (0.4.0) host.kama's bridge: another library on the page takes a listed file whole — a fetch's body — without
+        // its bytes ever passing through wasm memory. null for an unknown list or index.
+        Module['kamaUiFile'] = function (files, index) {
+            var entry = KamaUi.files[files];
+            return (entry && index >= 0 && index < entry.list.length) ? entry.list[index] : null;
+        };
         return 1;
     },
 
@@ -563,6 +718,7 @@ mergeInto(LibraryManager.library, {
         KamaUi.clearBindings();
         KamaUi.root.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
         KamaUi.untitle(KamaUi.root);
+        KamaUi.typeClasses(KamaUi.root);
         KamaUi.tip = null;
         KamaUi.makeTip();
         KamaUi.dragSource = null;
@@ -587,6 +743,7 @@ mergeInto(LibraryManager.library, {
         KamaUi.releaseInside(el, false);
         el.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
         KamaUi.untitle(el);
+        KamaUi.typeClasses(el);
     },
 
     kama_ui_web_set_image_rewrite__deps: ['$KamaUi'],
@@ -740,12 +897,15 @@ mergeInto(LibraryManager.library, {
     },
 
     kama_ui_web_poll_event__deps: ['$KamaUi'],
-    kama_ui_web_poll_event: function (handlePtr, targetPtr, sourcePtr, keyPtr, modsPtr) {
+    kama_ui_web_poll_event: function (handlePtr, targetPtr, sourcePtr, keyPtr, modsPtr, filesPtr, atXPtr, atYPtr) {
         HEAP32[handlePtr >> 2] = 0;
         HEAP32[targetPtr >> 2] = 0;
         HEAP32[sourcePtr >> 2] = 0;
         HEAP32[keyPtr >> 2] = 0;
         HEAP32[modsPtr >> 2] = 0;
+        HEAP32[filesPtr >> 2] = 0;
+        HEAPF32[atXPtr >> 2] = 0;
+        HEAPF32[atYPtr >> 2] = 0;
         if (KamaUi.head >= KamaUi.events.length) {
             // Drained: reset rather than letting the array grow for the life of the page. The native
             // shim does the same with its head index.
@@ -754,11 +914,18 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         var ev = KamaUi.events[KamaUi.head++];
+        var target = KamaUi.targetOf(ev) | 0;
         HEAP32[handlePtr >> 2] = ev.handle | 0;
-        HEAP32[targetPtr >> 2] = KamaUi.targetOf(ev) | 0;
+        HEAP32[targetPtr >> 2] = target;
         HEAP32[sourcePtr >> 2] = KamaUi.nameOf(ev.source) | 0;
         HEAP32[keyPtr >> 2] = ev.key | 0;
         HEAP32[modsPtr >> 2] = ev.mods | 0;
+        HEAP32[filesPtr >> 2] = ev.files | 0;
+        if (ev.kind === 7 && target) {
+            var at = KamaUi.within(KamaUi.el(target), ev.x, ev.y);
+            HEAPF32[atXPtr >> 2] = at[0];
+            HEAPF32[atYPtr >> 2] = at[1];
+        }
         return ev.kind | 0;
     },
 
@@ -997,7 +1164,10 @@ mergeInto(LibraryManager.library, {
         if (!el) return;
         var last = el.lastChild;
         el.insertAdjacentHTML('beforeend', KamaUi.rewrite(UTF8ToString(htmlPtr)));
-        for (var n = last ? last.nextSibling : el.firstChild; n; n = n.nextSibling) KamaUi.untitle(n);
+        for (var n = last ? last.nextSibling : el.firstChild; n; n = n.nextSibling) {
+            KamaUi.untitle(n);
+            KamaUi.typeClasses(n);
+        }
     },
 
     // ⚠️ TWO ATTRIBUTES ARE STATE NATIVELY AND ONLY A DEFAULT HERE. RmlUi keeps a checkbox's state in `checked` and a
@@ -1016,6 +1186,7 @@ mergeInto(LibraryManager.library, {
         }
         if (n.toLowerCase() === 'title') { el.setAttribute('data-kama-ui-title', v); return; }   // see `untitle`
         try { el.setAttribute(n, v); } catch (e) { return; }   // a name the DOM refuses ("", a space) does nothing
+        if ((n.toLowerCase() === 'type' || n.toLowerCase() === 'class') && el.tagName === 'INPUT') KamaUi.typeClasses(el);
         if (KamaUi.control(el)) {
             if (n === 'checked') el.checked = true;
             if (n === 'value') el.value = v;
@@ -1125,5 +1296,144 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_element_checked: function (handle) {
         var el = KamaUi.el(handle);
         return (el && el.tagName === 'INPUT' && el.checked === true) ? 1 : 0;
+    },
+
+    // ---- 0.4.0: files (kama_ui_web.h) ------------------------------------------------------------------------------
+
+    // ⚠️ A BROWSER OPENS A CHOOSER ONLY FOR A PERSON'S GESTURE (its "transient activation", a few seconds after a click
+    // or a key), and refuses silently otherwise — so this answers 0 rather than leave a chooser waiting for an answer
+    // that cannot come. The input is clicked at once, inside the call, and listens for its answer: `change` with the
+    // files, `cancel` without (and `onFocusBack` where a browser has no `cancel`).
+    kama_ui_web_choose_files__deps: ['$KamaUi'],
+    kama_ui_web_choose_files: function (acceptPtr, multiple) {
+        if (!KamaUi.root || !KamaUi.loaded || KamaUi.chooser) return 0;
+        var ua = navigator.userActivation;
+        if (ua && !ua.isActive) return 0;
+        var accept = acceptPtr ? UTF8ToString(acceptPtr) : '';
+        var input = document.createElement('input');
+        input.type = 'file';
+        if (accept) input.accept = accept;
+        input.multiple = multiple !== 0;
+        input.style.display = 'none';
+        var h = KamaUi.newList([]);
+        var entry = KamaUi.files[h];
+        entry.accept = accept;
+        entry.multiple = multiple !== 0;
+        entry.input = input;
+        KamaUi.chooser = h;
+        KamaUi.chooserLeft = false;
+        input.addEventListener('change', function () { KamaUi.answer(h, input.files); });
+        input.addEventListener('cancel', function () { KamaUi.answer(h, []); });
+        document.body.appendChild(input);
+        try { input.click(); } catch (e) { KamaUi.answer(h, []); }
+        return h;
+    },
+
+    kama_ui_web_file_count__deps: ['$KamaUi'],
+    kama_ui_web_file_count: function (files) {
+        var entry = KamaUi.files[files];
+        return entry ? entry.list.length : 0;
+    },
+
+    kama_ui_web_file_name__deps: ['$KamaUi', '$stringToUTF8', '$lengthBytesUTF8'],
+    kama_ui_web_file_name: function (files, index, buf, capacity) {
+        if (buf && capacity > 0) HEAPU8[buf] = 0;
+        var entry = KamaUi.files[files];
+        if (!entry || !(index >= 0 && index < entry.list.length)) return 0;
+        var s = String(entry.list[index].name || '');
+        if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
+        return lengthBytesUTF8(s);
+    },
+
+    kama_ui_web_file_size__deps: ['$KamaUi'],
+    kama_ui_web_file_size: function (files, index) {
+        var entry = KamaUi.files[files];
+        if (!entry || !(index >= 0 && index < entry.list.length)) return -1;
+        return entry.list[index].size;
+    },
+
+    // Releasing the list a chooser waits on closes nothing (a page cannot), but its answer is then ignored.
+    kama_ui_web_release_files__deps: ['$KamaUi'],
+    kama_ui_web_release_files: function (files) {
+        delete KamaUi.files[files];
+    },
+
+    kama_ui_web_read_file__deps: ['$KamaUi'],
+    kama_ui_web_read_file: function (files, index, offset, count) {
+        var entry = KamaUi.files[files];
+        if (!entry || !(index >= 0 && index < entry.list.length) || count < 0 || offset < 0) return 0;
+        var r = KamaUi.nextFile++;
+        KamaUi.reads[r] = { bytes: null, error: '', done: false };
+        var blob = entry.list[index].slice(offset, offset + count);
+        var finish = function (bytes, error) {
+            var rd = KamaUi.reads[r];
+            if (!rd) return;
+            rd.bytes = bytes;
+            rd.error = error;
+            rd.done = true;
+            KamaUi.events.push({ kind: 10, handle: 0, target: null, current: null, source: null, key: 0, mods: 0,
+                                 files: r, x: 0, y: 0 });
+        };
+        var p = blob.arrayBuffer ? blob.arrayBuffer() : new Promise(function (ok, no) {
+            var fr = new FileReader();
+            fr.onload = function () { ok(fr.result); };
+            fr.onerror = function () { no(fr.error); };
+            fr.readAsArrayBuffer(blob);
+        });
+        p.then(function (buf) { finish(new Uint8Array(buf), ''); },
+               function (err) { finish(null, String((err && err.message) || err || 'the file could not be read')); });
+        return r;
+    },
+
+    // -2 while it waits, -1 when it failed or is unknown, else its length.
+    kama_ui_web_read_length__deps: ['$KamaUi'],
+    kama_ui_web_read_length: function (read) {
+        var rd = KamaUi.reads[read];
+        if (!rd) return -1;
+        if (!rd.done) return -2;
+        return rd.bytes ? rd.bytes.length : -1;
+    },
+
+    kama_ui_web_read_take__deps: ['$KamaUi'],
+    kama_ui_web_read_take: function (read, buf) {
+        var rd = KamaUi.reads[read];
+        if (rd && rd.bytes && buf) HEAPU8.set(rd.bytes, buf);
+        delete KamaUi.reads[read];
+    },
+
+    kama_ui_web_read_error__deps: ['$KamaUi', '$stringToUTF8', '$lengthBytesUTF8'],
+    kama_ui_web_read_error: function (read, buf, capacity) {
+        if (buf && capacity > 0) HEAPU8[buf] = 0;
+        var rd = KamaUi.reads[read];
+        var s = rd ? String(rd.error || '') : '';
+        if (buf && capacity > 0) stringToUTF8(s, buf, capacity);
+        return lengthBytesUTF8(s);
+    },
+
+    kama_ui_web_read_release__deps: ['$KamaUi'],
+    kama_ui_web_read_release: function (read) {
+        delete KamaUi.reads[read];
+    },
+
+    // A copy of the bytes (the program's buffer may move), a Blob of them, and a hidden `<a download>` clicked. The URL
+    // is let go a minute later: a download that has not started by then never will.
+    kama_ui_web_save_file__deps: ['$KamaUi'],
+    kama_ui_web_save_file: function (namePtr, typePtr, bytesPtr, count) {
+        try {
+            var bytes = HEAPU8.slice(bytesPtr, bytesPtr + count);
+            var blob = new Blob([bytes], { type: typePtr ? UTF8ToString(typePtr) : 'application/octet-stream' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = namePtr ? UTF8ToString(namePtr) : 'download';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+            return 1;
+        } catch (e) {
+            return 0;
+        }
     }
 });

@@ -11,7 +11,7 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: published** (registry.kama-lang.org, 0.2.0 on 2026-10-14). Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
+> **Status: published** (registry.kama-lang.org, 0.3.0 on 2026-10-14; 0.4.0 is unreleased). Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
 > AddressSanitizer) and in headless Firefox 157 (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
@@ -23,7 +23,8 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 - markup appended and children removed in place;
 - events, polled, each naming where it happened: clicks, changes, double clicks, keys, focus and blur, drops;
 - a focus ring driven by TAB, the arrows and ENTER;
-- tooltips from `title`, and drag and drop from `draggable`;
+- tooltips from `title`, and drag and drop from `draggable`, onto zones marked `droppable`, saying where it landed;
+- files into and out of the page: chosen, dropped from outside, pasted, read in slices, offered to save;
 - quiet writes into controls, classes, attributes, inline properties and plain text;
 - a clipboard the program bridges;
 - recorded draw commands and textures.
@@ -41,8 +42,10 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 | pointer (native) | `mouseMove`, `mouseButton(button, down, mods)`, `mouseWheel` |
 | keyboard | `key(code, down, mods)` with `UI_KEY_*` (GLFW's numbers) and `UI_MOD_*`, `claimKey(key, mods)`, `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
 | clipboard | `copyText(text)`, `provideClipboard(text)` / `takeClipboardWrite()` (native; no-op / None on the web) |
+| files | `chooseFiles(accept, multiple)` → a file list, `fileCount` / `fileName` / `fileSize` / `fileType` / `filePath(files, i)`, `releaseFiles`, `readFile(files, i, offset, count)` → a read, `readBytes(read, into)`, `readError(read)`, `saveFile(name, bytes)`; `uiFileType(name)` |
+| files (native, the program's half) | `takeFileRequest()`, `fileRequestAccept` / `fileRequestMultiple`, `provideFiles(files, paths)`, `dropFiles(paths, x, y)`, `pasteFiles(paths)`, `takeSaveRequest()`, `saveRequestName`, `saveRequestBytes` (0 and no-ops on the web) |
 | elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `elementContent(h)` / `setElementContent(h, text)` (plain text), `scrollToEnd(h)`, `isScrolledToEnd(h)`, `scrollIntoView(h)` |
-| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop, element, target, source, key, mods }` |
+| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop \| Files \| Paste \| Read, element, target, source, key, mods, files, atX, atY }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
 `ui::UiNav` turns a pad's d-pad and stick into arrow presses (hysteresis, one direction at a time, delay then repeat).
@@ -106,6 +109,21 @@ The rules that matter most:
   HTML5's. A drop raises `Drop` where it lands, with `target` the element dropped on and `source` the one dragged.
   During the drag the dragged element has the class `ui-dragging` and the element under the pointer has
   `ui-drop-target`.
+- **Drop zones: `droppable="true"` with an id** (0.4.0). A drop anywhere inside a zone names the zone as its `target`,
+  and the zone, not whatever inner element is under the pointer, has `ui-drop-target`; with no zone there, both are
+  the nearest element with an id, as before. `atX` and `atY` say where in the target it landed, 0 to 1 across its
+  border box, so a list can put what was dropped before or after a row.
+- **Files** (0.4.0). A file list is a handle the package holds files under until `releaseFiles`:
+  - `chooseFiles` returns the list its answer fills, and a `Files` event says it is filled (empty: cancelled). One at
+    a time; on the web only within a person's gesture, so call it while handling the Click or Change that asked.
+  - files dropped from outside are a `Drop` with `source` 0 and `files` their list (the same list on every event of one
+    drop); files pasted are a `Paste`, the document's, naming the focused element;
+  - each file has a name, a size, a media type from its name (the package's own table, `uiFileType`, the same on both
+    legs) and, natively, its path;
+  - `readFile` reads a slice without blocking: a `Read` event says it is done, and `readBytes` moves the bytes out;
+  - `saveFile` offers bytes to save under a name: a download on the web, a save request for the program natively.
+  On the web a file stays the browser's `File` until a read asks, and another library takes it whole from
+  `Module.kamaUiFile(files, index)` (a fetch's body: an upload never copies the file into wasm memory).
 - **Tooltips: `title`.** After half a second of hover, on the program's clock (so call `update` or `updateAt` every
   frame on the web too), the package shows the title in `#kama-ui-tooltip`. The document styles `.ui-tooltip`. It
   hides on leaving, on a press and on a scroll. On the web the attribute is held as `data-kama-ui-title`, so the
@@ -125,7 +143,7 @@ nothing to fetch or build first, and no `-L` path to set. Once the packages are 
 alone:
 
 ```json
-"dependencies": { "@kama/ui": { "version": "^0.3.0" } }
+"dependencies": { "@kama/ui": { "version": "^0.4.0" } }
 ```
 
 `@kama/rmlui` and `@kama/freetype` come with it. To build against a checkout instead (working on the package itself),
@@ -190,7 +208,7 @@ fn void openTool(int32 width, int32 height) {
 }
 ```
 
-The program owns the window natively, so four things are its part. The browser does all four by itself.
+The program owns the window natively, so five things are its part. The browser does all five by itself.
 
 - **Every key it does not keep** goes to `key(code, down, mods)`, with Cmd as `UI_MOD_CTRL`, and every character goes
   to `typeChar`. That is how shortcuts reach the document as `Key` events, and how a field's Ctrl+A/C/X/V works.
@@ -205,6 +223,25 @@ The program owns the window natively, so four things are its part. The browser d
       Optional<string> w = ui.takeClipboardWrite();  // each copy, cut or copyText, oldest first
       match (w) { case None: { more = false; } case Some(value: s): { /* put s on the OS clipboard */ } };
   }
+  ```
+
+- **Files** (0.4.0): the package owns no window, so it opens no dialog. The program's platform layer (or a dialog
+  package) does:
+
+  ```kama
+  int32 asked = ui.takeFileRequest();               // a chooseFiles waiting: 0 for none
+  if (asked != 0) {
+      // show the OS's open dialog, filtered by ui.fileRequestAccept(files: asked), one or several by
+      // ui.fileRequestMultiple(files: asked); then answer with what was chosen (none: cancelled)
+      ui.provideFiles(files: asked, paths: chosen);
+  }
+  int32 save = ui.takeSaveRequest();                // a saveFile waiting: 0 for none
+  if (save != 0) {
+      string name = ui.saveRequestName(save: save); // the save dialog's suggestion
+      bool took = ui.saveRequestBytes(save: save, into: bytes);   // then write them where the person chose
+  }
+  ui.dropFiles(paths: dropped, x: cursorX, y: cursorY);   // the window's file drop, as it happens
+  ui.pasteFiles(paths: copied);                     // a paste while the OS clipboard holds files
   ```
 
 ### In a browser
@@ -227,8 +264,13 @@ Build the program with `--target WASM`. This package's `jsLibraries` and `emSett
   `<input>`s.
 - **The clock.** `update` and `updateAt` keep the program's clock, which the tooltip's delay is measured on. Call one
   every frame here too.
+- **Files.** `chooseFiles` clicks a hidden `<input type=file>` at once, so it must be called while the browser still
+  counts a person's gesture (a few seconds after the click or the key); otherwise it answers 0. Dropped and pasted
+  files come from the browser's own events, and a file dropped anywhere in the window is never opened as a page while
+  a document is up. `saveFile` is a download. `Module.kamaUiFile(files, index)` hands another library the `File`.
 - `mouseMove`, `mouseButton`, `mouseWheel`, `render`, `typeChar`, `setDpRatio`, `loadFont`, `provideImage` and
-  `provideClipboard` are no-ops here, and `takeClipboardWrite` is always None: the browser does those itself.
+  `provideClipboard` are no-ops here, and `takeClipboardWrite` is always None: the browser does those itself. So are
+  the files' native half (`takeFileRequest` and `takeSaveRequest` always 0).
 
 ### Writing documents for both legs
 
@@ -245,6 +287,9 @@ every selector under `#ui-root`, mapping `body` and RmlUi's scrollbar elements. 
   control an inline `tab-index: auto` that no stylesheet rule beats, and the web leg reads the same inline style
   (`tabindex="-1"` also works there).
 - `autofocus` puts the ring on a control when the document loads, on both legs.
+- **An `<input>` carries its type as a class on both legs** (`range`, `checkbox`, `text`…), as RmlUi gives it one, so
+  `input.range` styles a slider on both. A class toggled on an input keeps it (0.4.0; natively a toggle used to drop
+  it, and the web gave none).
 - Inline properties set with `setElementProperty` may use `dp`. The web leg rewrites it to `px`.
 - Text another person typed goes through `ui::uidoc::escapeText` before `setInnerRml`. On the web an unescaped `<` is
   script injection.
@@ -291,6 +336,14 @@ The two scripts build one program, `tests/`. Shared on both legs:
     Shift+Alt click carrying their modifiers;
   - **a drag and drop**: the two classes mid-drag, one Drop heard by the list with its target and source, the classes
     gone after, and an appended `draggable` row dragged onto a bound row's text;
+  - **a drop zone**: the class on the zone, not on its row with an id, a drop naming the zone and saying where it
+    landed (top left, bottom right, read from the drop even after the pointer moved on), and a range the drag passed
+    over keeping its own class and size;
+  - **files**, as ticks of the program's frame loop (a read finishes on its own time on the web): `uiFileType`; two
+    files dropped on a zone's row — one Drop naming the zone, with their names, sizes and types; two reads, a slice
+    and one past the end, each a Read event, their bytes moved out and gone once taken; the chooser one at a time,
+    answered with two files and then cancelled; a file pasted into a focused field; a save offered as `out.json`,
+    8 bytes, `application/json`; no chooser without a document;
   - plain text written and read, ignored by a form control; a select's options rebuilt, appended to and trimmed with
     its value settled and no change;
   - closing the document;
@@ -319,17 +372,21 @@ dragstart, dragenter, dragover, drop, dragend; a key is a keydown at the focused
 
 - **Natively**: draws with vertices and a glyph-atlas texture, the provided picture at its own size, typing with
   Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
-  control", Ctrl+A/C/V against the clipboard the program bridges, and a page reflowing to `setSize`.
+  control", Ctrl+A/C/V against the clipboard the program bridges, and a page reflowing to `setSize`; a file's
+  absolute path, a one-file chooser keeping the first path, and a read of a file gone from the disk failing with its
+  name.
   The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
 - **On the web**: a claimed Ctrl+S prevented (and Cmd+S folded into it) while Ctrl+P is not, `copyText` reaching
   `navigator.clipboard`, a title held as `data-kama-ui-title`, a text selection surviving an append, a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
   attribute), real elements, a row a rewrite released and a field from a closed
   document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
   window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,
-  applied to the box under the point (a synthetic `WheelEvent` scrolls nothing).
+  applied to the box under the point (a synthetic `WheelEvent` scrolls nothing); no path for a file, the zone
+  highlighted while files are dragged over and not once they leave, `Module.kamaUiFile` handing over the `File`, and
+  text dragged in from outside reaching nothing.
 
-Results: **native 219 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 224 checks**, passing in headless
+Results: **native 260 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 269 checks**, passing in headless
 Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
 published.
 

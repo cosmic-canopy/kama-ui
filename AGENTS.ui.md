@@ -29,9 +29,13 @@ the contract. These are the working rules.
   `data-kama-ui-*` mark is how `scrollToEnd` waits for the layout), `$KamaUi` on the web. Per-document state that is
   plain numbers stays on the value: natively the document and the tooltip's timer, so a program keeps one UiContext
   and passes it by `ref`.
-- **Native events have two sources** in `pollEvent`. Bindings feed `heard`; the package's own listeners on the
-  document root (keys, drag progress, scroll) feed `own`. RmlUi sends Focus and Blur to every element of the focus
-  chain and focuses whatever is pressed, so only `focusable` elements report them. Bindings hear them in the capture
+- **The one native state that is not RmlUi's** is the files' `FileStore` (0.4.0): lists, reads, save requests and their
+  events, on the heap behind the context's `store` pointer — made in `start`, handed out with `Owned.release()`,
+  borrowed in place as `store[0]`, and adopted back and dropped in `close`. A value still owns nothing.
+- **Native events have three sources** in `pollEvent`. Bindings feed `heard`; the package's own listeners on the
+  document root (keys, drag progress, scroll) feed `own`; and (0.4.0) the files' queue follows once RmlUi's is
+  drained. RmlUi sends Focus and Blur to every element of the focus chain and focuses whatever is pressed, so only
+  `focusable` elements report them. Bindings hear them in the capture
   phase, and so do the web's: that is why both legs deliver them ancestors first.
 - **On the web every entry point resolves a handle through `KamaUi.el(handle)`**, never `els[h - 1]`. It re-finds a
   released element by its id (what @kama/rmlui's bindings do natively), which is what keeps a stale handle a no-op.

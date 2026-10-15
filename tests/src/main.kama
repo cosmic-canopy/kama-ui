@@ -2,15 +2,67 @@
 // the browser (tools/test-web.sh, emcc, run in a headless browser). The rewriter and the pad's presses are pure and run
 // on both; the seam suite runs the same checks against whichever `UiContext` this build has. A failing case prints its
 // name; the last line counts them.
+//
+// The files' checks (0.4.0) come last, as ticks of the program's frame loop (`std::app::run`): a read finishes on its
+// own time on the web, so they need the page to have its event loop between frames. On the web `run` does not return,
+// so the report is made from the last tick; natively the loop returns and `main` hands back the verdict.
 
-import { Tally, uidocTests, navTests, seamTests, pageTests, report };
+import {
+    Tally, uidocTests, navTests, seamTests, pageTests, report, FileChecks,
+    std::app::run, std::app::TickFn, std::memory::Owned,
+};
 
-fn int32 main()
+// What the loop ticks: the files' checks, and the verdict once they are done.
+type resource Run {
+    FileChecks files;
+    int32 code;
+    bool done;
+
+    public unsafe ctor make(Tally t)
+    {
+        this.files = FileChecks.make(t: t);
+        this.code = 1;
+        this.done = false;
+    }
+
+    public unsafe fn int32 tick()
+    {
+        if (this.done) { return 0; }
+        if (!this.files.tick()) { return 1; }
+        Tally t = this.files.tally();
+        this.code = report(t: t);
+        this.done = true;
+        return 0;
+    }
+
+    public fn int32 verdict() { return this.code; }
+}
+
+unsafe fn int32 tick(UnsafePtr state)
+{
+    UnsafePtr<Run> r = cast<UnsafePtr<Run>>(state);
+    return tickOnce(r: r[0]);
+}
+
+unsafe fn int32 tickOnce(ref Run r) { return r.tick(); }
+
+unsafe fn int32 verdictOf(ref Run r) { return r.verdict(); }
+
+unsafe fn int32 start()
 {
     Tally t = Tally.zero();
     uidocTests(t: t);
     navTests(t: t);
     seamTests(t: t);
     pageTests(t: t);
-    return report(t: t);
+    Owned<Run> boxed = new Run.make(t: t);
+    UnsafePtr<Run> state = boxed.release();     // the loop's from here (on the web it outlives `main`)
+    TickFn f = tick;
+    run(tick: f, state: cast<UnsafePtr>(state));
+    // Natively the loop has returned: the verdict, and the state given back to be dropped.
+    int32 code = verdictOf(r: state[0]);
+    Owned<Run> back = Owned.adopt(raw: state);
+    return code;
 }
+
+fn int32 main() { return start(); }

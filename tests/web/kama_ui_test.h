@@ -50,4 +50,16 @@ extern int32_t kama_ui_test_drag(const char* id, int32_t steps);
 extern int32_t kama_ui_test_select(const char* id);
 // 1 when the page's selection is still that text: not collapsed, its nodes still in the document and inside the element.
 extern int32_t kama_ui_test_selection_holds(const char* id);
+// 0.4.0: files. A drag of two files (a.txt, b.png) from outside to the point: `how` 1 enters and goes over, 2 drops
+// too, 3 leaves the window, 4 drops plain text instead. The chooser allowed (a gesture assumed), checked against
+// what was asked and answered (or cancelled); a paste of a.txt; the downloads stopped and recorded ("name size type",
+// measured); and the bridge's File at an index, by its name ("" for null).
+extern int32_t kama_ui_test_drop_files(float x, float y, int32_t how);
+extern void kama_ui_test_allow_chooser(void);
+extern int32_t kama_ui_test_chooser_is(const char* accept, int32_t multiple);
+extern int32_t kama_ui_test_answer_chooser(int32_t cancel);
+extern int32_t kama_ui_test_paste_files(void);
+extern void kama_ui_test_spy_saves(void);
+extern int32_t kama_ui_test_saved(char* buffer, int32_t capacity);
+extern int32_t kama_ui_test_bridge_is(int32_t files, int32_t index, const char* name);
 #endif

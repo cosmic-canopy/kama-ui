@@ -11,6 +11,9 @@
       document's own rule: neither leg hides anything for the attribute alone. The textarea, the select and the radios
       are one of each control kind, for counting changes per edit; they are out of the ring too. The rows drag
       (`draggable="true"`), and the package's two drag classes change their width, which a box shows on both legs.
+      The zone (0.4.0) is `droppable="true"` inside a bound box, placed to the right where it moves nothing else and
+      covers no centre a click aims at (the heading's is at the stage's middle, above it), in the web page's view: its top
+      row has an id of its own, which a drop on it must NOT name, and the class shows on the zone alone.
     -->
     <style>
         body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
@@ -40,6 +43,11 @@
         select selectbox { display: block; background-color: #303030ff; }
         select selectbox option { display: block; height: 20dp; }
         #choices input { width: 20dp; height: 20dp; }
+        #zones { position: absolute; left: 360dp; top: 80dp; width: 300dp; background-color: #303828ff; }
+        #zone { width: 280dp; height: 48dp; }
+        #zone p { height: 24dp; }
+        #zone.ui-drop-target { width: 290dp; }
+        #zone-a.ui-drop-target { width: 100dp; }
     </style>
 </head>
 <body>
@@ -65,6 +73,9 @@
         <option id="pick-a" value="a" selected>A</option>
         <option id="pick-b" value="b">B</option>
     </select>
+    <div id="zones">
+        <div id="zone" droppable="true"><p id="zone-a">Zone A</p><p>Zone B</p></div>
+    </div>
     <div id="choices">
         <input id="choice-a" type="radio" name="choice" value="a" checked style="tab-index: none;"/>
         <input id="choice-b" type="radio" name="choice" value="b" style="tab-index: none;"/>

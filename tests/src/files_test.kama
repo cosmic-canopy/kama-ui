@@ -1,0 +1,280 @@
+// Files into and out of the page (0.4.0), on whichever leg this build is: the same checks against `ui::UiContext`. A
+// read finishes on its own time on the web (a promise), so these run as ticks of the program's frame loop rather than
+// in one pass: the first tick drops files and starts reads, later ticks wait for the reads (a frame budget, not a
+// clock), and the last checks the chooser, a paste and a save. Input is the leg's: natively the program's half of
+// host.kama (`dropFiles`, `provideFiles`, `pasteFiles`, `takeSaveRequest`) with real files on disk, on the web the
+// events a browser fires with `File`s in them (tests/web/kama_ui_test.js).
+
+import {
+    Tally, check, section, fontPath, dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs,
+    fileLegChecks, centerX, centerY,
+    ui::UiContext, ui::UiEvent, ui::UiEventKind, ui::UiRect, ui::uiFileType,
+    std::collections::DynamicArray,
+};
+export { FileChecks };
+
+comptime int32 READ_FRAMES = 600;   // ten seconds at sixty: far more than two small reads take
+
+// The zone is 100 high and its top row 40, so a drop on the row's middle lands at a fifth of the zone.
+fn string filesDoc()
+{
+    string style = "body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; } div, p { display: block; } #box { width: 400dp; padding: 10dp; background-color: #202838ff; } #drop { width: 300dp; height: 100dp; background-color: #304060ff; } #inner { height: 40dp; } #drop.ui-drop-target { width: 310dp; } input { display: block; width: 240dp; height: 28dp; margin-top: 4dp; tab-index: auto; }";
+    string body = "<div id='box'><div id='drop' droppable='true'><p id='inner'>Drop here</p></div></div><input id='name' type='text' value=''/>";
+    return "<rml><head><style>${style}</style></head><body>${body}</body></rml>";
+}
+
+// The bytes are exactly `text`'s.
+fn bool bytesAre(const ref DynamicArray<uint8> bytes, const ref string text)
+{
+    if (bytes.length() != text.length()) { return false; }
+    isize i = 0;
+    while (i < bytes.length()) {
+        if (bytes[i] != text[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+type resource FileChecks {
+    Tally t;
+    UiContext ui;
+    int32 phase;
+    int32 frames;
+    int32 list;
+    int32 readA;
+    int32 readB;
+    bool sawA;
+    bool sawB;
+
+    public ctor make(Tally t)
+    {
+        this.t = t;
+        string font = fontPath();
+        this.ui = UiContext.open(width: 1280, height: 720, fontPath: font);
+        this.phase = 0;
+        this.frames = 0;
+        this.list = 0;
+        this.readA = 0;
+        this.readB = 0;
+        this.sawA = false;
+        this.sawB = false;
+    }
+
+    public fn Tally tally() { return this.t; }
+
+    // One frame: true once every check has run.
+    public unsafe fn bool tick()
+    {
+        this.ui.update();
+        if (this.phase == 0) {
+            this.begin();
+            this.phase = 1;
+            return !this.ui.isOpen();
+        }
+        if (this.phase == 1) {
+            this.waitForReads();
+            if (this.phase == 1) { return false; }
+        }
+        this.chooserPasteSave();
+        this.ui.close();
+        return true;
+    }
+
+    // The media types, then a drop of two files on the zone's top row, and two reads started.
+    unsafe fn void begin()
+    {
+        section(what: "files: the media type is the package's, from the name");
+        check(t: this.t, ok: uiFileType(name: "shot.PNG") == "image/png" && uiFileType(name: "clip.mp4") == "video/mp4" &&
+                             uiFileType(name: "model.glb") == "model/gltf-binary",
+              what: "uiFileType knows an extension in any case");
+        check(t: this.t, ok: uiFileType(name: "README") == "application/octet-stream" &&
+                             uiFileType(name: "v1.2/notes") == "application/octet-stream" &&
+                             uiFileType(name: "a.unknown") == "application/octet-stream",
+              what: "...and anything else is application/octet-stream (no extension, a dot in a folder, an unknown one)");
+
+        check(t: this.t, ok: this.ui.isOpen(), what: "files: the UI opens");
+        if (!this.ui.isOpen()) { return; }
+        this.ui.setDpRatio(ratio: 1.0);
+        this.ui.setViewport(offsetX: 0.0, offsetY: 0.0, scale: 1.0, visible: true);
+        string doc = filesDoc();
+        check(t: this.t, ok: this.ui.loadDocumentText(rml: doc), what: "files: a document with a drop zone loads");
+        int32 box = this.ui.bindElement(elementId: "box");
+        int32 zone = this.ui.findElement(elementId: "drop");
+        int32 inner = this.ui.findElement(elementId: "inner");
+        this.ui.update();
+        this.ui.render();
+
+        section(what: "files: dropped from outside the page");
+        UiRect ir = this.ui.elementRect(handle: inner);
+        check(t: this.t, ok: dropTestFiles(ui: this.ui, x: centerX(r: ir), y: centerY(r: ir)),
+              what: "two files are dropped on the zone's top row");
+        int32 drops = 0;
+        UiEvent dropped = UiEvent.make(kind: UiEventKind::None, element: 0, target: 0, source: 0, key: 0, mods: 0, files: 0,
+                                    atX: 0.0, atY: 0.0);
+        bool more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool d = match (ev.kind) { case Drop: true; case _: false; };
+                    if (d) { drops = drops + 1; dropped = ev; }
+                }
+            };
+        }
+        check(t: this.t, ok: drops == 1 && dropped.element == box && dropped.target == zone && dropped.source == 0 && dropped.files != 0,
+              what: "one Drop, heard by the box, naming the zone, with no source and a file list (${drops}, ${dropped.target}, ${dropped.files})");
+        check(t: this.t, ok: dropped.atY > 0.05 && dropped.atY < 0.4, what: "...where it landed: the top of the zone (${dropped.atY})");
+        this.list = dropped.files;
+        int32 n = this.ui.fileCount(files: this.list);
+        string a = this.ui.fileName(files: this.list, index: 0);
+        string b = this.ui.fileName(files: this.list, index: 1);
+        check(t: this.t, ok: n == 2 && a == "a.txt" && b == "b.png", what: "the list holds both, in order (${n}: ${a}, ${b})");
+        int64 sa = this.ui.fileSize(files: this.list, index: 0);
+        int64 sb = this.ui.fileSize(files: this.list, index: 1);
+        string ta = this.ui.fileType(files: this.list, index: 0);
+        string tb = this.ui.fileType(files: this.list, index: 1);
+        check(t: this.t, ok: sa == 5 && sb == 4 && ta == "text/plain" && tb == "image/png",
+              what: "...with their sizes and media types (${sa} ${ta}, ${sb} ${tb})");
+        check(t: this.t, ok: this.ui.fileName(files: this.list, index: 2).isEmpty() && this.ui.fileSize(files: this.list, index: 2) == -1 &&
+                             this.ui.fileCount(files: 9999) == 0,
+              what: "an index outside the list, and an unknown list, have nothing");
+
+        section(what: "files: read in slices, without blocking");
+        this.readA = this.ui.readFile(files: this.list, index: 0, offset: 1, count: 3);
+        this.readB = this.ui.readFile(files: this.list, index: 0, offset: 3, count: 100);
+        check(t: this.t, ok: this.readA != 0 && this.readB != 0 && this.readA != this.readB,
+              what: "two reads of a.txt start (${this.readA}, ${this.readB})");
+        check(t: this.t, ok: this.ui.readFile(files: this.list, index: 5, offset: 0, count: 1) == 0 &&
+                             this.ui.readFile(files: this.list, index: 0, offset: -1, count: 1) == 0,
+              what: "a read of a file not in the list, or from before its start, is 0");
+        fileLegChecks(t: this.t, ui: this.ui, list: this.list, zone: zone, x: centerX(r: ir), y: centerY(r: ir));
+    }
+
+    // The two Read events, each once; then the bytes, and the list let go (the reads outlive it).
+    unsafe fn void waitForReads()
+    {
+        this.frames = this.frames + 1;
+        bool more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool r = match (ev.kind) { case Read: true; case _: false; };
+                    if (r && ev.files == this.readA) { this.sawA = true; }
+                    if (r && ev.files == this.readB) { this.sawB = true; }
+                }
+            };
+        }
+        if (!(this.sawA && this.sawB)) {
+            if (this.frames > READ_FRAMES) {
+                check(t: this.t, ok: false, what: "both reads finish (after ${this.frames} frames: ${this.sawA}, ${this.sawB})");
+                this.phase = 2;
+            }
+            return;
+        }
+        check(t: this.t, ok: true, what: "both reads finish, each a Read event with its read as `files`");
+        this.ui.releaseFiles(files: this.list);
+        check(t: this.t, ok: this.ui.fileCount(files: this.list) == 0, what: "releaseFiles lets the list go");
+        DynamicArray<uint8> got = DynamicArray.empty();
+        got.add(item: 1ui8);
+        bool errorFree = this.ui.readError(read: this.readA).isEmpty();
+        bool okA = this.ui.readBytes(read: this.readA, into: got);
+        isize lenA = got.length();
+        check(t: this.t, ok: okA && errorFree && bytesAre(bytes: got, text: "lph"),
+              what: "readBytes moves out bytes 1 to 4 of 'alpha', replacing what the buffer held (${lenA} bytes)");
+        bool okB = this.ui.readBytes(read: this.readB, into: got);
+        isize lenB = got.length();
+        check(t: this.t, ok: okB && bytesAre(bytes: got, text: "ha"), what: "...and a read past the end gets what there is (${lenB} bytes)");
+        bool again = this.ui.readBytes(read: this.readA, into: got);
+        check(t: this.t, ok: !again && got.length() == 0, what: "a read taken is gone: false, and the buffer emptied");
+        this.phase = 2;
+    }
+
+    // The chooser (one at a time; answered, and cancelled), a paste of files, and a save.
+    unsafe fn void chooserPasteSave()
+    {
+        if (!this.ui.isOpen()) { return; }
+        section(what: "files: the chooser");
+        allowChooser();
+        int32 c = this.ui.chooseFiles(accept: ".txt,.png", multiple: true);
+        check(t: this.t, ok: c != 0, what: "chooseFiles opens a chooser (${c})");
+        check(t: this.t, ok: this.ui.chooseFiles(accept: "", multiple: false) == 0, what: "...one at a time: a second is 0 while it waits");
+        check(t: this.t, ok: answerChooser(ui: this.ui, files: c, accept: ".txt,.png", multiple: true, cancel: false),
+              what: "the person chooses two files (the leg's answer, to what was asked)");
+        int32 answered = 0;
+        UiEvent ans = UiEvent.make(kind: UiEventKind::None, element: 0, target: 0, source: 0, key: 0, mods: 0, files: 0,
+                                   atX: 0.0, atY: 0.0);
+        bool more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool f = match (ev.kind) { case Files: true; case _: false; };
+                    if (f) { answered = answered + 1; ans = ev; }
+                }
+            };
+        }
+        int32 chosen = this.ui.fileCount(files: c);
+        string first = this.ui.fileName(files: c, index: 0);
+        check(t: this.t, ok: answered == 1 && ans.files == c && ans.element == 0 && ans.target == 0 && chosen == 2 && first == "a.txt",
+              what: "one Files event, the document's, with the list chooseFiles returned, now holding both (${answered}, ${chosen}, ${first})");
+        this.ui.releaseFiles(files: c);
+        int32 c2 = this.ui.chooseFiles(accept: "", multiple: false);
+        check(t: this.t, ok: c2 != 0 && c2 != c, what: "answered, the next chooseFiles opens another");
+        check(t: this.t, ok: answerChooser(ui: this.ui, files: c2, accept: "", multiple: false, cancel: true),
+              what: "the person cancels it");
+        int32 cancelled = 0 - 1;
+        more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool f = match (ev.kind) { case Files: true; case _: false; };
+                    if (f && ev.files == c2) { cancelled = this.ui.fileCount(files: c2); }
+                }
+            };
+        }
+        check(t: this.t, ok: cancelled == 0, what: "a cancel is the Files event with an empty list (${cancelled})");
+        this.ui.releaseFiles(files: c2);
+
+        section(what: "files: pasted");
+        int32 name = this.ui.bindElement(elementId: "name");
+        check(t: this.t, ok: this.ui.focusElement(handle: name), what: "the text field takes the focus");
+        check(t: this.t, ok: pasteTestFiles(ui: this.ui), what: "a copied file is pasted");
+        int32 pastes = 0;
+        UiEvent paste = ans;
+        more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool p = match (ev.kind) { case Paste: true; case _: false; };
+                    if (p) { pastes = pastes + 1; paste = ev; }
+                }
+            };
+        }
+        string pastedName = this.ui.fileName(files: paste.files, index: 0);
+        check(t: this.t, ok: pastes == 1 && paste.element == 0 && paste.target == name && this.ui.fileCount(files: paste.files) == 1 &&
+                             pastedName == "a.txt",
+              what: "one Paste, the document's, naming the focused field, with the file (${pastes}, ${paste.target}, ${pastedName})");
+        this.ui.releaseFiles(files: paste.files);
+
+        section(what: "files: offered to save");
+        spySaves();
+        string json = "{\"a\": 1}";
+        DynamicArray<uint8> bytes = DynamicArray.empty();
+        foreach (uint8 x in json) { bytes.add(item: x); }
+        check(t: this.t, ok: this.ui.saveFile(name: "out.json", bytes: bytes.view()), what: "saveFile offers the bytes");
+        string saved = savedAs(ui: this.ui);
+        check(t: this.t, ok: saved == "out.json 8 application/json", what: "...as out.json, all 8 bytes, typed by its name ('${saved}')");
+
+        section(what: "files: no document, no chooser");
+        this.ui.closeDocument();
+        check(t: this.t, ok: this.ui.chooseFiles(accept: "", multiple: false) == 0, what: "with no document up, chooseFiles is 0");
+    }
+}

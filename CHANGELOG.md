@@ -5,6 +5,54 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — unreleased
+
+Files into and out of the page, and drops that land where a document means them to: what a tool needs to take a
+person's pictures and give its own results back. Built on @kama/rmlui 0.2.0, unchanged. The same events reach
+`pollEvent` on both legs, as before.
+
+### Breaking
+
+- `UiEventKind` gains `Files`, `Paste` and `Read`. A `match` on it needs the new arms.
+- `UiEvent` gains `files`, `atX` and `atY`, and `UiEvent.make` takes all nine fields.
+- `UiHost` gains the files' methods below; a backend of its own must implement them.
+
+### Added
+
+- **Drop zones**: an element with `droppable="true"` and an id is a zone. A drop anywhere inside one names the zone
+  as its `target` (up to the bound element that hears it), and the zone has `ui-drop-target`, not the inner element
+  under the pointer. With no zone, both are the nearest element with an id, as in 0.3.0.
+- **Where a drop landed**: `atX` and `atY`, 0 to 1 across the target's border box — before or after a row. Natively
+  read from RmlUi's drop event itself, so a pointer moved before the poll does not change it.
+- **Files**, one contract on both legs (host.kama, "files"):
+  - `chooseFiles(accept, multiple)`: a file list its answer fills, reported by a `Files` event (empty: cancelled).
+    One at a time; 0 with no document, and on the web without a person's recent gesture.
+  - Files dropped from outside the page are a `Drop` with `source` 0 and `files` their list, by the zone rules. On
+    the web the zone is highlighted while they are dragged over, and a file dropped anywhere in the window is never
+    opened as a page. Text dragged in from outside is no drop.
+  - Files pasted are a `Paste`, the document's, naming the focused element.
+  - `fileCount`, `fileName`, `fileSize`, `fileType`, `filePath` (natively the absolute path, "" on the web) and
+    `releaseFiles`. A list lives until released or `close`, across documents.
+  - `readFile(files, index, offset, count)`: a slice read without blocking, reported by a `Read` event; `readBytes`
+    moves the bytes out and lets the read go, `readError` says why one failed.
+  - `saveFile(name, bytes)`: a download on the web, a save request natively.
+  - `uiFileType(name)`: a media type from the name's extension, the package's own table, the same on both legs.
+  - On the web a file stays the browser's `File` until a read asks, and `Module.kamaUiFile(files, index)` hands it to
+    another library whole (a fetch's body).
+- **The program's half natively**, as for the clipboard: `takeFileRequest`, `fileRequestAccept`,
+  `fileRequestMultiple` and `provideFiles` for the open dialog; `takeSaveRequest`, `saveRequestName` and
+  `saveRequestBytes` for the save dialog; `dropFiles(paths, x, y)` for the window's drop; `pasteFiles(paths)`. No-ops
+  and zeros on the web, where the browser does all of it.
+- A new document drops the events queued for the old one but not a `Files` or a `Read`: those answer the program.
+
+### Fixed
+
+- **Natively a class toggled on an `<input>` dropped RmlUi's own class for its type** (`range`, `checkbox`…), so a
+  document's `input.range` rule stopped matching: a drag passing over a slider, or `setElementClass` on one, gave it a
+  text field's size and moved everything below. The type class is set again after every class write.
+- **On the web an `<input>` now carries its type as a class too**, as RmlUi gives it one, so `input.range` styles a
+  slider on both legs (it matched natively only).
+
 ## [0.3.0] — 2026-10-14
 
 Everything else a tool page needs, in one release: a list that grows and is trimmed in place, keys and shortcuts,

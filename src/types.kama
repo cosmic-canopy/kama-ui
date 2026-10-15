@@ -17,6 +17,7 @@ export {
     UI_KEY_W, UI_KEY_X, UI_KEY_Y, UI_KEY_Z, UI_KEY_0, UI_KEY_1, UI_KEY_2, UI_KEY_3, UI_KEY_4, UI_KEY_5, UI_KEY_6,
     UI_KEY_7, UI_KEY_8, UI_KEY_9,
     UI_MOD_SHIFT, UI_MOD_CTRL, UI_MOD_ALT, UI_TOOLTIP_DELAY,
+    uiFileType,
 };
 
 // The keys, as GLFW numbers them. ⚠️ GLFW's NUMBERS, not RmlUi's and not the DOM's: a program forwards its platform's
@@ -107,14 +108,20 @@ comptime int32 UI_MOD_ALT = 4;
 comptime float64 UI_TOOLTIP_DELAY = 0.5;
 
 // What an event is. Elements are INTEGER HANDLES from `bindElement`, never strings: dispatch is an integer compare
-// rather than a string compare. 0.3.0 added every kind after `Change`:
+// rather than a string compare. 0.3.0 added every kind from `DoubleClick` to `Drop`, 0.4.0 the last three:
 //   Click        a press and release on the element (ENTER on the focused one is one too)
 //   Change       one edit of a control (host.kama, `pollEvent`)
 //   DoubleClick  a second press within half a second, between the two clicks (the second click still follows)
 //   Key          a key (types.kama's table) — the document's, so `element` is 0 and `target` names the focused element
 //   Focus, Blur  a focusable element took or lost the focus: a button, a form control, or anything with a tab index
-//   Drop         a dragged element (`source`) was dropped on `target`
-type enum UiEventKind { None, Click, Change, DoubleClick, Key, Focus, Blur, Drop }
+//   Drop         something was dropped on `target`: a dragged element (`source`), or files from outside the page
+//                (CHANGED in 0.4.0: `source` 0 and `files` their list), at `atX`, `atY` in the target
+//   Files        a `chooseFiles` was answered: `files` is the list it returned, now filled (empty: cancelled). The
+//                document's, as a Key is: `element` and `target` 0
+//   Paste        files were pasted (Ctrl+V of a copied file or a picture): the document's, `target` the focused
+//                element, `files` their list
+//   Read         a `readFile` finished: `files` is the read it returned (`readBytes`, `readError`); `element` 0
+type enum UiEventKind { None, Click, Change, DoubleClick, Key, Focus, Blur, Drop, Files, Paste, Read }
 
 type value UiEvent {
     public UiEventKind kind;
@@ -130,9 +137,18 @@ type value UiEvent {
     public int32 source;       // ADDED (0.3.0): a Drop's dragged element, named as `target` is; 0 for every other kind
     public int32 key;          // ADDED (0.3.0): a Key's UI_KEY_*; 0 for every other kind
     public int32 mods;         // ADDED (0.3.0): UI_MOD_* held — on a Key, a Click, a DoubleClick and a Drop; else 0
+    // ADDED (0.4.0): what a Drop of files, a Files or a Paste carries — a FILE LIST (host.kama, `fileCount`…), the same
+    // one on every event of one drop — and a Read's read (`readBytes`); 0 for every other kind, and for a Drop of an
+    // element. A handle, as `target` is, and for the same reason: an event owns nothing.
+    public int32 files;
+    // ADDED (0.4.0): where a Drop landed in its `target`'s border box, 0 at the left (top) edge to 1 at the right
+    // (bottom) — so a list can put what was dropped before a row (`atY < 0.5`) or after it. 0 for every other kind.
+    public float32 atX;
+    public float32 atY;
 
-    // CHANGED (0.3.0): every field.
-    public ctor make(UiEventKind kind, int32 element, int32 target, int32 source, int32 key, int32 mods)
+    // CHANGED (0.4.0): every field.
+    public ctor make(UiEventKind kind, int32 element, int32 target, int32 source, int32 key, int32 mods, int32 files,
+                     float32 atX, float32 atY)
     {
         this.kind = kind;
         this.element = element;
@@ -140,7 +156,57 @@ type value UiEvent {
         this.source = source;
         this.key = key;
         this.mods = mods;
+        this.files = files;
+        this.atX = atX;
+        this.atY = atY;
     }
+}
+
+// ADDED (0.4.0): a file's media type from its name's extension (ASCII, any case), as `fileType` reports it on both
+// legs — the package's own table rather than a browser's or an OS's guess, so one file reads the same everywhere.
+// "application/octet-stream" for an extension it does not know, and for none.
+fn string uiFileType(const ref string name)
+{
+    isize dot = 0 - 1;
+    isize i = 0;
+    while (i < name.length()) {
+        if (name[i] == 46ui8) { dot = i; }
+        if (name[i] == 47ui8 || name[i] == 92ui8) { dot = 0 - 1; }
+        i = i + 1;
+    }
+    if (dot < 0 || dot + 1 >= name.length()) { return "application/octet-stream"; }
+    string ext = name.substring(start: dot + 1, end: name.length()).toLower();
+    if (ext == "png") { return "image/png"; }
+    if (ext == "jpg" || ext == "jpeg") { return "image/jpeg"; }
+    if (ext == "webp") { return "image/webp"; }
+    if (ext == "gif") { return "image/gif"; }
+    if (ext == "bmp") { return "image/bmp"; }
+    if (ext == "tif" || ext == "tiff") { return "image/tiff"; }
+    if (ext == "svg") { return "image/svg+xml"; }
+    if (ext == "avif") { return "image/avif"; }
+    if (ext == "exr") { return "image/x-exr"; }
+    if (ext == "hdr") { return "image/vnd.radiance"; }
+    if (ext == "ktx2") { return "image/ktx2"; }
+    if (ext == "mp4" || ext == "m4v") { return "video/mp4"; }
+    if (ext == "webm") { return "video/webm"; }
+    if (ext == "mov") { return "video/quicktime"; }
+    if (ext == "mkv") { return "video/x-matroska"; }
+    if (ext == "wav") { return "audio/wav"; }
+    if (ext == "ogg" || ext == "oga") { return "audio/ogg"; }
+    if (ext == "mp3") { return "audio/mpeg"; }
+    if (ext == "flac") { return "audio/flac"; }
+    if (ext == "glb") { return "model/gltf-binary"; }
+    if (ext == "gltf") { return "model/gltf+json"; }
+    if (ext == "obj") { return "model/obj"; }
+    if (ext == "json") { return "application/json"; }
+    if (ext == "txt" || ext == "log") { return "text/plain"; }
+    if (ext == "md") { return "text/markdown"; }
+    if (ext == "csv") { return "text/csv"; }
+    if (ext == "html" || ext == "htm") { return "text/html"; }
+    if (ext == "css") { return "text/css"; }
+    if (ext == "pdf") { return "application/pdf"; }
+    if (ext == "zip") { return "application/zip"; }
+    return "application/octet-stream";
 }
 
 // What a command asks of the renderer. Apply them IN ORDER: a clip-mask command changes every draw after it.

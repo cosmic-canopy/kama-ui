@@ -5,7 +5,9 @@
 // `elementChecked`, `findElement`, an event's `target`, one change per edit, `setInnerRml` releasing what it replaces,
 // and `elementText` with no cap. 0.2.1 added `scrollToEnd` and made every attribute write quiet natively. 0.3.0's are
 // marked too: what the rest of a tool page needs — appending to and trimming a list, keys and shortcuts, focus, double
-// clicks, drag and drop, tooltips, the clipboard, and plain text. (0.2.2 was never published; 0.3.0 carries it.)
+// clicks, drag and drop, tooltips, the clipboard, and plain text. (0.2.2 was never published; 0.3.0 carries it.) 0.4.0's
+// are files into and out of the page — chosen, dropped from outside, pasted, read, offered to save — and drop zones
+// (`droppable="true"`) with where a drop landed.
 //
 // WHAT THE PROGRAM DOES NATIVELY, because it owns the window (the web's browser does all of it itself):
 //   - forward EVERY key it does not keep for itself to `key`, with its modifiers (Cmd as UI_MOD_CTRL), and every
@@ -13,7 +15,11 @@
 //   - pass the modifiers held to `mouseButton`, so a Ctrl+click reports them;
 //   - call `updateAt` every frame with a monotonic clock: double clicks and the tooltip's delay are measured on it;
 //   - bridge the clipboard: hand the OS clipboard's text to `provideClipboard` before forwarding a paste (or every
-//     frame), and put every `takeClipboardWrite` on the OS clipboard.
+//     frame), and put every `takeClipboardWrite` on the OS clipboard;
+//   - (0.4.0) bridge files: show the OS's open dialog for every `takeFileRequest` and answer it with `provideFiles`,
+//     its save dialog for every `takeSaveRequest` (writing `saveRequestBytes` where the person chose), and forward its
+//     window's file drops to `dropFiles` and a paste of copied files to `pasteFiles`. The package owns no window, so
+//     it opens no dialog itself: the program's platform layer has them (or a dialog package does).
 //
 // TWO WAYS TO OPEN, ONE CONTRACT. `UiContext.open(width, height, fontPath)` is a STAGE: a fixed virtual resolution the
 // program letterboxes and scales (a game's menus). `UiContext.openPage(width, height, fontPath)` (0.2.0) is a PAGE: the
@@ -39,7 +45,7 @@
 // EVERY STRING PARAMETER IS `const ref string`: the methods only read them, and `const ref` is what lets a literal be
 // passed straight in. Take a literal wherever you can; bind a local only when the string is computed.
 
-import { UiCommand, UiTexture, UiEvent, UiRect, std::collections::ConstView };
+import { UiCommand, UiTexture, UiEvent, UiRect, std::collections::ConstView, std::collections::DynamicArray };
 export { UiHost };
 
 type contract UiHost for value {
@@ -161,6 +167,20 @@ type contract UiHost for value {
     // dragged one. During the drag the dragged element has the class `ui-dragging` and the element under the pointer
     // (named as a target is: the nearest with an id) has `ui-drop-target`, for the document to style. Natively the
     // classes follow at each `pollEvent`.
+    //
+    // DROP ZONES (0.4.0): an element with `droppable="true"` and an id is a ZONE. A drop anywhere inside one names the
+    // zone as its `target` — the nearest zone at or above the element under the pointer, up to the bound element that
+    // hears it — and the zone, not whatever inner element is under the pointer, has `ui-drop-target`. With no zone
+    // there, both are as before: the nearest element with an id. So a document marks what it means as a place to drop
+    // (a card, a list) and still gets a precise target wherever it marks nothing. `atX`/`atY` say where in the target
+    // it landed (0 to 1 across its border box), so a list can insert before or after a row.
+    //
+    // FILES DROPPED FROM OUTSIDE (0.4.0) — a file manager's, the desktop's — are a `Drop` too, by the same rules, with
+    // `source` 0 and `files` their list (`fileCount`…): the same list on every event of one drop, the program's to
+    // `releaseFiles`. On the web the browser reports them, and highlights the zone under the pointer while they are
+    // dragged over the page; a file dropped anywhere else in the window is never opened as a page. Natively the
+    // program forwards its window's drop to `dropFiles`; a window reports no drag-over for them, so nothing is
+    // highlighted before the drop.
     fn void mouseMove(float32 x, float32 y);
     fn void mouseButton(int32 button, bool down, int32 mods);
     fn void mouseWheel(float32 delta);
@@ -256,6 +276,63 @@ type contract UiHost for value {
     //     if (follow) { ui.scrollToEnd(handle: log); }
     fn bool isScrolledToEnd(int32 handle);
 
+    // ---- files (0.4.0) ----
+    //
+    // A FILE LIST is a handle (>= 1) the package holds files under: what a chooser was answered with, what was dropped
+    // or pasted. It lives until `releaseFiles` (or `close`): a new document does not release it. Each file has a name,
+    // a size, a media type from its name (`uiFileType`) and, natively, its path. ON THE WEB A FILE STAYS THE BROWSER'S
+    // `File`: no byte is copied into the program until `readFile` asks, and another library on the page can take it
+    // whole from `Module.kamaUiFile(files, index)` — a fetch's body, so an upload of a large file never passes through
+    // wasm memory. Natively a file is its path, and the program may open it itself.
+    //
+    // `chooseFiles` opens the chooser and returns the list its answer fills — a `Files` event, the document's (element
+    // and target 0), with this `files`; an empty list when the person cancelled. 0 when no chooser can open now: one is
+    // already waiting for its answer (one at a time, on both legs), there is no document, or, on the web, no person's
+    // click or key in the last few seconds — a browser opens a chooser only for a gesture, so call it while handling
+    // the Click or Change that asked. `accept` is HTML's: extensions and media types, comma separated (".png,.jpg",
+    // "image/*"; "" for anything). Natively the request waits for the program (`takeFileRequest`).
+    fn int32 chooseFiles(const ref string accept, bool multiple);
+
+    // What a list holds. 0 / "" / -1 for an unknown handle or an index outside it. `filePath` is the file's absolute
+    // path natively and "" on the web, where a page never learns one.
+    fn int32 fileCount(int32 files);
+    fn string fileName(int32 files, int32 index);
+    fn int64 fileSize(int32 files, int32 index);
+    fn string fileType(int32 files, int32 index);
+    fn string filePath(int32 files, int32 index);
+    fn void releaseFiles(int32 files);
+
+    // Read `count` bytes of file `index` from `offset` (fewer at its end), without blocking: a `Read` event with the
+    // read this returns as `files` says it is done, on both legs (natively at the next `pollEvent`). Then
+    // `readBytes` moves the bytes into `into` (replacing what it held) and lets the read go — false, with `into`
+    // emptied, when it failed, and `readError` says why ("" while it succeeded or waits). A large file is read in
+    // pieces, each its own read. 0 for an unknown list or index. A read outlives a `releaseFiles` of its list.
+    fn int32 readFile(int32 files, int32 index, int64 offset, int32 count);
+    fn bool readBytes(int32 read, ref DynamicArray<uint8> into);
+    fn string readError(int32 read);
+
+    // Offer `bytes` to the person to save, under the suggested `name`: a download on the web (where the browser
+    // decides the folder, or asks), and natively a request the program performs with its save dialog
+    // (`takeSaveRequest`). True when it was offered; nothing reports where it went, on either leg.
+    fn bool saveFile(const ref string name, ConstView<uint8> bytes);
+
+    // The program's half natively (the web's browser does all of it itself: there these answer 0 and do nothing).
+    //   `takeFileRequest` — the next `chooseFiles` to answer, as its list (0 for none), with `fileRequestAccept` and
+    //   `fileRequestMultiple`; `provideFiles` answers it with the paths the person chose (none: cancelled), and the
+    //   `Files` event follows. `dropFiles` — files dropped on the window at `x`, `y` (framebuffer pixels, as
+    //   `mouseMove`'s): a `Drop` on what lies there, by the rules above. `pasteFiles` — files the OS clipboard held
+    //   when the person pasted: a `Paste`. `takeSaveRequest` — the next `saveFile` (0 for none): its name, and its
+    //   bytes moved out by `saveRequestBytes`, which lets the request go.
+    fn int32 takeFileRequest();
+    fn string fileRequestAccept(int32 files);
+    fn bool fileRequestMultiple(int32 files);
+    fn void provideFiles(int32 files, const ref DynamicArray<string> paths);
+    fn void dropFiles(const ref DynamicArray<string> paths, float32 x, float32 y);
+    fn void pasteFiles(const ref DynamicArray<string> paths);
+    fn int32 takeSaveRequest();
+    fn string saveRequestName(int32 save);
+    fn bool saveRequestBytes(int32 save, ref DynamicArray<uint8> into);
+
     // ---- the clipboard (0.3.0) ----
     //
     // `copyText` puts text on the clipboard — a Copy button. On the web the browser's clipboard takes it
@@ -291,7 +368,10 @@ type contract UiHost for value {
     //   - focus moving is Blur on what had it, then Focus on what has it, for a button, a form control or an element
     //     with a tab index (natively RmlUi focuses whatever is pressed; nothing else is reported). ⚠️ They do not bubble
     //     in RmlUi, so they reach a bound element's ANCESTORS FIRST, outermost first, and then the element: on both legs;
-    //   - a Ctrl+click is a Click with `mods` UI_MOD_CTRL.
+    //   - a Ctrl+click is a Click with `mods` UI_MOD_CTRL;
+    //   - (0.4.0) files are a Drop, a Files or a Paste with their list, and a finished read a Read. Natively those the
+    //     program forwards (`provideFiles`, `dropFiles`, `pasteFiles`) and a read's end come after the document's own
+    //     events of that frame.
     // CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
     // every kind of control — each character typed into a text field or a textarea, each step of a range (live, as a
     // slider previews), each toggle of a checkbox, each choice of a radio or an option. A commit is no edit: ENTER in a

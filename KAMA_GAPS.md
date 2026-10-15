@@ -25,6 +25,13 @@ package it never imports, and `tests/kama.json` names all three. A `kama_workspa
 repositories is the documented way out, but the three are separate repositories. The restating ends once the
 dependencies are registry versions. **Open: language, std or package?** The toolchain (`pkg install`).
 
+### 3. `std::fs::File` has no seek or positioned read (GAP, worked around)
+
+`readFile`'s slice of a large file must not cost reading everything before it, and std's `File` offers no seek
+(`read`, `write`, `readAll`, `metadata`; the-mallow-man's KM-57 found the same in 0.9.577, for an HTTP `Range`). The
+native leg seeks the descriptor itself: `lseek` (or `_lseeki64` on Windows) through `src/kama_ui_native.h`, on
+`File.rawFd()`. **Open: language, std or package?** std: a `seek` (or `readAt`) on `File`. Found 0.9.603, 2026-10-15.
+
 ### Seen again
 
 - With several files in a module, a failed check's summary names the wrong file (errors in `b.kama` print
