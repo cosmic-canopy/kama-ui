@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-10-15
 
 Files into and out of the page, and drops that land where a document means them to: what a tool needs to take a
 person's pictures and give its own results back. Built on @kama/rmlui 0.2.0, unchanged. The same events reach
