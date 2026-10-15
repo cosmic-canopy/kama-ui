@@ -42,8 +42,8 @@ the contract. These are the working rules.
   with a check, never into a per-screen special case.
 - **This package depends on `@kama/rmlui` `^0.2.0` from the registry** (FreeType comes with it). To work against
   checkouts, override them in a gitignored `kama.local.json` (`"overrides": {"@kama/rmlui": {"path":
-  "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one. An override
-  applies only once the version resolves, so an UNPUBLISHED version also needs a local file registry holding a tarball
-  of the checkout, layered before the official one in `kama.local.json`'s `registries` (`tests/kama.local.json` too;
-  it cannot override a transitive dependency, so it takes the tarball). `kama.lock` then pins that tarball: restore it
-  (`git checkout kama.lock tests/kama.lock`) and never commit it until the version is published.
+  "../kama-rmlui"}}`); never commit a path dependency, since a published package cannot carry one. Since kama 0.9.603
+  an override stands in for an UNPUBLISHED version too, as long as the checkout's version satisfies the range. An
+  override does not reach a transitive dependency (`tests/`), which takes a local file registry holding a tarball of
+  the checkout, layered before the official one in `tests/kama.local.json`'s `registries`; `tests/kama.lock` then pins
+  that tarball: restore it (`git checkout tests/kama.lock`) and never commit it until the version is published.
