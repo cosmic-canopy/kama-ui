@@ -7,7 +7,8 @@
 // titles held as `data-kama-ui-title`, children counted and removed, plain text, scrolling into view and the clipboard.
 // 0.4.0 added drop zones (`droppable="true"`) and where a drop landed, and files: chosen (`<input type=file>`), dropped
 // from outside, pasted, read in slices and offered as downloads — each a browser `File` held here, never copied into
-// the program until a read asks.
+// the program until a read asks. 0.5.0 added a `<video>` or `<audio>`'s playback — its time, length and pause, a seek,
+// play and pause — and the `Media` event its own events raise, heard in the capture phase as focus is.
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -125,9 +126,13 @@ mergeInto(LibraryManager.library, {
         // 0.1.0's `clearBindings` removed `click` alone, and left `change` and `input` on every control of every
         // document the page had shown — a detached field still queueing events for a handle that now named something
         // else. ⚠️ FOCUS IS HEARD IN THE CAPTURE PHASE (0.3.0) because RmlUi's does not bubble: natively a bound
-        // container hears a child's focus on the way down, ancestors first, and so it does here.
+        // container hears a child's focus on the way down, ancestors first, and so it does here. ⚠️ SO ARE A MEDIA
+        // ELEMENT'S (0.5.0), FOR A SHARPER REASON: they do not bubble at all in the DOM, so a bound container listening
+        // in the bubble phase would never hear its clip. `mediaEvents` is the set that raises a Media: the metadata
+        // loaded, a play, a pause, a seek finished, the time moved.
         heard: ['click', 'change', 'input', 'mousedown', 'drop'],
-        heardCapture: ['focusin', 'focusout'],
+        heardCapture: ['focusin', 'focusout', 'loadedmetadata', 'play', 'pause', 'seeked', 'timeupdate'],
+        mediaEvents: { loadedmetadata: 1, play: 1, pause: 1, seeked: 1, timeupdate: 1 },
 
         // A form control: what has a value and a checked state on BOTH legs (RmlUi's ElementFormControl). A browser
         // gives `value` to more (an `<li>` has a numeric one), which natively has none.
@@ -135,9 +140,14 @@ mergeInto(LibraryManager.library, {
             return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
         },
 
-        // What a DOM event is to the seam: 1 a click, 2 a change, 3 a double click, 5 focus, 6 blur, 7 a drop, 0
-        // nothing (4, a key, comes from `onKey`, not from a binding; 8 a chooser's answer, 9 a paste of files and 10 a
-        // finished read come from the package's own listeners, 0.4.0).
+        // (0.5.0) A `<video>` or `<audio>`: what the media entry points answer for, and what raises a Media.
+        media: function (el) {
+            return !!el && (el.tagName === 'VIDEO' || el.tagName === 'AUDIO');
+        },
+
+        // What a DOM event is to the seam: 1 a click, 2 a change, 3 a double click, 5 focus, 6 blur, 7 a drop, 11 a
+        // media element's change (0.5.0), 0 nothing (4, a key, comes from `onKey`, not from a binding; 8 a chooser's
+        // answer, 9 a paste of files and 10 a finished read come from the package's own listeners, 0.4.0).
         //
         // ⚠️ A DOUBLE CLICK IS THE SECOND PRESS (`mousedown` with `detail` 2), NOT THE BROWSER'S `dblclick`, which
         // arrives after the second click: RmlUi raises its own on the second press, before that click, and the legs
@@ -160,6 +170,7 @@ mergeInto(LibraryManager.library, {
             if (e.type === 'focusin') return KamaUi.focusable(e.target) ? 5 : 0;
             if (e.type === 'focusout') return KamaUi.focusable(e.target) ? 6 : 0;
             if (e.type === 'drop') return 7;
+            if (KamaUi.mediaEvents[e.type]) return KamaUi.media(e.target) ? 11 : 0;
             var t = e.target;
             var live = !!t && (t.tagName === 'TEXTAREA' ||
                                (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'radio'));
@@ -177,6 +188,15 @@ mergeInto(LibraryManager.library, {
                 KamaUi.listeners[i] = function (e) {
                     var kind = KamaUi.kindOf(e);
                     if (!kind) return;
+                    // (0.5.0) ONE MEDIA EVENT WAITS AT A TIME for this binding and this clip (host.kama): the event says
+                    // only that something changed, so a second before the poll would say nothing new — and a seek
+                    // alone fires two (`timeupdate`, then `seeked`).
+                    if (kind === 11) {
+                        for (var q = KamaUi.head; q < KamaUi.events.length; q++) {
+                            var w = KamaUi.events[q];
+                            if (w.kind === 11 && w.handle === handle && w.target === e.target) return;
+                        }
+                    }
                     var rec = { kind: kind, handle: handle, target: e.target, current: e.currentTarget, source: null,
                                 key: 0, mods: (kind === 1 || kind === 3 || kind === 7) ? KamaUi.modsOf(e) : 0,
                                 files: 0, x: 0, y: 0 };
@@ -1056,7 +1076,9 @@ mergeInto(LibraryManager.library, {
         return 0;
     },
 
-    // A text control has the focus: the DOM is typing into it, so a printable key is not a screen verb.
+    // A text control has the focus: the DOM is typing into it, so a printable key is not a screen verb. CHANGED (0.5.0):
+    // every type a person types into (host.kama), from the ATTRIBUTE as native.kama reads it, not `el.type`, which a
+    // browser normalises (an unknown type reads `text` there and not natively).
     kama_ui_web_text_focused__deps: ['$KamaUi'],
     kama_ui_web_text_focused: function () {
         var el = document.activeElement;
@@ -1064,7 +1086,8 @@ mergeInto(LibraryManager.library, {
         if (el.tagName === 'TEXTAREA') return 1;
         if (el.tagName !== 'INPUT') return 0;
         var t = (el.getAttribute('type') || 'text').toLowerCase();
-        return (t === 'text' || t === 'password') ? 1 : 0;
+        var typing = { text: 1, password: 1, number: 1, search: 1, email: 1, url: 1, tel: 1 };
+        return typing[t] ? 1 : 0;
     },
 
     // At most capacity - 1 bytes and a NUL, and ALWAYS the full length: src/web.kama asks once with no buffer to learn
@@ -1435,5 +1458,63 @@ mergeInto(LibraryManager.library, {
         } catch (e) {
             return 0;
         }
+    },
+
+    // ---- 0.5.0: media (kama_ui_web.h) ------------------------------------------------------------------------------
+
+    // -1 is None on the way out: a time or a length is never negative. `duration` is NaN until the metadata has loaded
+    // and +Infinity for a stream with no end, and neither is a length.
+    kama_ui_web_media_time__deps: ['$KamaUi'],
+    kama_ui_web_media_time: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el)) return -1;
+        var t = el.currentTime;
+        return (isFinite(t) && t >= 0) ? t : -1;
+    },
+
+    kama_ui_web_media_duration__deps: ['$KamaUi'],
+    kama_ui_web_media_duration: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el)) return -1;
+        var d = el.duration;
+        return (isFinite(d) && d >= 0) ? d : -1;
+    },
+
+    kama_ui_web_media_paused__deps: ['$KamaUi'],
+    kama_ui_web_media_paused: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el)) return -1;
+        return el.paused ? 1 : 0;
+    },
+
+    // `currentTime` written, which reads back at once (the browser clamps it to the clip once the length is known) and
+    // fires `seeked` once the frame there is decoded. Before the metadata it sets where the clip will start.
+    kama_ui_web_seek_media__deps: ['$KamaUi'],
+    kama_ui_web_seek_media: function (handle, seconds) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el) || !isFinite(seconds) || !(seconds >= 0)) return 0;
+        try { el.currentTime = seconds; } catch (e) { return 0; }
+        return 1;
+    },
+
+    // ⚠️ `play()` RETURNS A PROMISE A BROWSER MAY REJECT (a clip with sound and no person's gesture), and an unhandled
+    // rejection is an error in the console: it is caught and dropped. `paused` is what says whether it played.
+    kama_ui_web_play_media__deps: ['$KamaUi'],
+    kama_ui_web_play_media: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el)) return 0;
+        try {
+            var p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(function () { });
+        } catch (e) { }
+        return 1;
+    },
+
+    kama_ui_web_pause_media__deps: ['$KamaUi'],
+    kama_ui_web_pause_media: function (handle) {
+        var el = KamaUi.el(handle);
+        if (!KamaUi.media(el)) return 0;
+        el.pause();
+        return 1;
     }
 });

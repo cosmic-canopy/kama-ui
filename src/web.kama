@@ -81,6 +81,13 @@ extern fn int32 kama_ui_web_read_error(int32 read, UnsafePtr<cchar> buffer, int3
 extern fn void  kama_ui_web_read_release(int32 read);
 extern fn int32 kama_ui_web_save_file(UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> type, UnsafeConstPtr<uint8> bytes,
                                       int32 count);
+// 0.5.0 (kama_ui_web.h).
+extern fn float64 kama_ui_web_media_time(int32 handle);
+extern fn float64 kama_ui_web_media_duration(int32 handle);
+extern fn int32 kama_ui_web_media_paused(int32 handle);
+extern fn int32 kama_ui_web_seek_media(int32 handle, float64 seconds);
+extern fn int32 kama_ui_web_play_media(int32 handle);
+extern fn int32 kama_ui_web_pause_media(int32 handle);
 
 // The runtime string constructor. An `extern` is a reference to a C symbol rather than a module
 // symbol — it is never exported or imported, so a file that names one declares it.
@@ -104,6 +111,7 @@ fn UiEventKind kindOf(int32 raw)
     if (raw == 8) { return UiEventKind::Files; }
     if (raw == 9) { return UiEventKind::Paste; }
     if (raw == 10) { return UiEventKind::Read; }
+    if (raw == 11) { return UiEventKind::Media; }
     return UiEventKind::None;
 }
 
@@ -638,5 +646,51 @@ type value UiContext implements UiHost {
     {
         into.clear();
         return false;
+    }
+
+    // ---- 0.5.0: media (host.kama). The element's own `currentTime`, `duration` and `paused`, read in the JS. ----
+
+    // -1 is the JS's None: a time and a length are never negative.
+    public unsafe fn Optional<float64> mediaTime(int32 handle)
+    {
+        if (this.ready == 0) { return Optional::None; }
+        float64 t = kama_ui_web_media_time(handle: handle);
+        if (t < 0.0) { return Optional::None; }
+        return Optional::Some(value: t);
+    }
+
+    public unsafe fn Optional<float64> mediaDuration(int32 handle)
+    {
+        if (this.ready == 0) { return Optional::None; }
+        float64 d = kama_ui_web_media_duration(handle: handle);
+        if (d < 0.0) { return Optional::None; }
+        return Optional::Some(value: d);
+    }
+
+    public unsafe fn Optional<bool> mediaPaused(int32 handle)
+    {
+        if (this.ready == 0) { return Optional::None; }
+        int32 p = kama_ui_web_media_paused(handle: handle);
+        if (p < 0) { return Optional::None; }
+        return Optional::Some(value: p != 0);
+    }
+
+    // `currentTime` written: the JS refuses a time that is negative, not a number or infinite.
+    public unsafe fn bool seekMedia(int32 handle, float64 seconds)
+    {
+        if (this.ready == 0) { return false; }
+        return kama_ui_web_seek_media(handle: handle, seconds: seconds) != 0;
+    }
+
+    public unsafe fn bool playMedia(int32 handle)
+    {
+        if (this.ready == 0) { return false; }
+        return kama_ui_web_play_media(handle: handle) != 0;
+    }
+
+    public unsafe fn bool pauseMedia(int32 handle)
+    {
+        if (this.ready == 0) { return false; }
+        return kama_ui_web_pause_media(handle: handle) != 0;
     }
 }

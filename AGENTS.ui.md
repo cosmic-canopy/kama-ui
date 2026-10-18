@@ -11,7 +11,9 @@ the contract. These are the working rules.
 - **The gate is BOTH test scripts.** `tools/test.sh` runs natively, in debug, in release and under AddressSanitizer
   (Linux). @kama/rmlui and @kama/freetype come from the registry; both vendor their sources, so
   there is nothing to build first. `tools/test-web.sh` uses emcc (`EMSDK`, default `~/emsdk`) and headless Firefox, with the
-  verdict POSTed back to `tools/web-test-server.py`. A change to `src/` is not proven until both pass. `web.kama`
+  verdict POSTed back to `tools/web-test-server.py`, and serves `tests/fixtures/clip.webm` beside the page for the
+  media suite (made once by `tools/make-test-clip.py`, PyAV; run Python with `-I`). A change to `src/` is not proven
+  until both pass. `web.kama`
   and the JS compile only on the web leg, so the native script cannot catch a break there.
 - **The seam suite is shared** (`tests/src/seam_test.kama`). Put a check there unless the legs legitimately differ,
   and then put it in `tests/src/leg_native.kama` or `leg_web.kama`. Input is injected per leg (`injectClick`,
@@ -32,6 +34,11 @@ the contract. These are the working rules.
 - **The one native state that is not RmlUi's** is the files' `FileStore` (0.4.0): lists, reads, save requests and their
   events, on the heap behind the context's `store` pointer — made in `start`, handed out with `Owned.release()`,
   borrowed in place as `store[0]`, and adopted back and dropped in `close`. A value still owns nothing.
+- **Media (0.5.0) is the web's alone.** RmlUi has no `<video>` or `<audio>`, so natively every media method answers
+  None or false and no `Media` event is queued; the shared suite (`tests/src/media_test.kama`) branches on the leg's
+  `playsMedia()` rather than living in a leg file, so a native decoder later meets the same checks. On the web the
+  media events are heard in the capture phase (they do not bubble), and one `Media` waits at a time per binding and
+  clip (`listen`).
 - **Native events have three sources** in `pollEvent`. Bindings feed `heard`; the package's own listeners on the
   document root (keys, drag progress, scroll) feed `own`; and (0.4.0) the files' queue follows once RmlUi's is
   drained. RmlUi sends Focus and Blur to every element of the focus chain and focuses whatever is pressed, so only

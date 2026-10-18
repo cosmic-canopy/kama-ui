@@ -15,7 +15,8 @@ file @compileFor(!ARCH_WASM32);
 //     the tooltip, an element the package appends to every document and shows from `update`;
 //   - (0.4.0) the files (host.kama): every list, read and save request the program provided or asked for, and the
 //     events they raise, in a `FileStore` on the heap behind the context's `store` pointer — the one piece of state
-//     here that is not RmlUi's — made when the UI starts and dropped at `close`.
+//     here that is not RmlUi's — made when the UI starts and dropped at `close`;
+//   - (0.5.0) media playback answers None and false: RmlUi has no media element (host.kama, "media").
 //
 // ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
 // would reach the wasm leg too; the whole-unit gate (kama 0.9.150) keeps it — and its import of @kama/rmlui — out. The
@@ -1509,10 +1510,14 @@ type value UiContext implements UiHost {
         string tag = e.tag();
         if (tag == "textarea") { return true; }
         if (tag != "input") { return false; }
-        // RmlUi's default for an <input> with no type is "text", as a browser's is.
+        // CHANGED (0.5.0): every type a person types into (host.kama), read as kama_ui_web.js reads it — the attribute,
+        // in any case, absent or empty being `text` — rather than as RmlUi classes it, since RmlUi makes every type it
+        // does not know (`date` among them) a text field, which a browser does not.
         Optional<string> t = e.attribute(name: "type");
-        string kind = match (t) { case None: "text"; case Some(value: s): copy s; };
-        return kind == "text" || kind == "password";
+        string kind = match (t) { case None: "text"; case Some(value: s): s.toLower(); };
+        if (kind.isEmpty()) { return true; }
+        return kind == "text" || kind == "password" || kind == "number" || kind == "search" || kind == "email" ||
+               kind == "url" || kind == "tel";
     }
 
     public unsafe fn void setDpRatio(float32 ratio)
@@ -1753,4 +1758,17 @@ type value UiContext implements UiHost {
         if (this.ready == 0) { into.clear(); return false; }
         return this.store[0].takeSaveBytes(save: save, into: into);
     }
+
+    // ---- 0.5.0: media (host.kama) ----
+    //
+    // ⚠️ NO ELEMENT HERE IS A MEDIA ELEMENT. RmlUi has no `<video>` or `<audio>` — it decodes no media, and a document's
+    // `<video>` is a plain element that lays out as an empty box — so every answer is None or false whatever the handle
+    // names, and no `Media` event is ever queued. What changes when the toolkit gets a decoder is these bodies and a
+    // source for the event; the contract and every program written against it stay as they are.
+    public unsafe fn Optional<float64> mediaTime(int32 handle) { return Optional::None; }
+    public unsafe fn Optional<float64> mediaDuration(int32 handle) { return Optional::None; }
+    public unsafe fn Optional<bool> mediaPaused(int32 handle) { return Optional::None; }
+    public unsafe fn bool seekMedia(int32 handle, float64 seconds) { return false; }
+    public unsafe fn bool playMedia(int32 handle) { return false; }
+    public unsafe fn bool pauseMedia(int32 handle) { return false; }
 }

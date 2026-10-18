@@ -5,6 +5,45 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — unreleased
+
+A `<video>` or `<audio>` element's playback — where it is, a seek, its length, play and pause, and an event when any
+of it changes — which is what a page needs to pick a frame of a clip; and `textFocused` counting every control a
+person types into. Media plays on the web only: natively RmlUi has no media element until the toolkit gets a
+decoder, so there every answer is None or false. Built on @kama/rmlui 0.2.0, unchanged, and tested with kama 0.9.667.
+
+### Breaking
+
+- `UiEventKind` gains `Media`. A `match` on it needs the new arm.
+- `UiHost` gains the media methods below; a backend of its own must implement them.
+
+### Added
+
+- **Media playback** (host.kama, "media"), by handle, as an element's value is:
+  - `mediaTime(h)`, `mediaDuration(h)` (seconds, `Optional<float64>`) and `mediaPaused(h)` (`Optional<bool>`). None for
+    0, an unknown or stale handle, an element that is not a `<video>` or `<audio>`, and a length not known yet (before
+    the metadata has loaded) or without end.
+  - `seekMedia(h, seconds)`: true when it was asked of a media element with a finite time >= 0. The time reads back at
+    once (clamped to the clip by the browser once its length is known), and a `Media` event follows when the frame
+    there has been decoded.
+  - `playMedia(h)` and `pauseMedia(h)`: true when asked of a media element. A pause takes effect at once; a play is
+    the browser's to allow (`mediaPaused` says whether it did).
+  - A **`Media`** event when a media element's metadata has loaded, it plays or pauses, a seek has finished, or its
+    time moves while it plays. `target` names it by the usual rule, and the event says only that something changed:
+    read the state. A browser's media events do not bubble, so the web hears them in the capture phase, as Focus — a
+    bound container hears its clips', ancestors first. One waits at a time per binding and clip: a `Media` not yet
+    polled absorbs the next, so a seek (whose time moves, then it finishes) is one event at the next poll.
+  - Natively every one answers None or false, whatever the handle names, and a `Media` event never arrives. A
+    document may carry a `<video>` on both legs; natively it lays out as an empty box.
+
+### Changed
+
+- **`textFocused()` counts every control a person types into, the same on both legs**: a `<textarea>`, and an
+  `<input>` whose `type` is absent or empty, `text`, `password`, `number`, `search`, `email`, `url` or `tel`, in any
+  case. It was `text` and `password` only, so a shortcut such as Ctrl+Z could take a number or a search field's own
+  undo. Any other type is not, on either leg (natively RmlUi makes a type it does not know a text field, which a
+  browser does not).
+
 ## [0.4.0] — 2026-10-15
 
 Files into and out of the page, and drops that land where a document means them to: what a tool needs to take a

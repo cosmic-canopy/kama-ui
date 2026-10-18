@@ -153,6 +153,7 @@ fn string kindName(UiEventKind k)
         case Files: "Files";
         case Paste: "Paste";
         case Read: "Read";
+        case Media: "Media";
     };
 }
 
@@ -242,6 +243,41 @@ fn string pageText()
             <p>nine</p><p>ten</p><p>eleven</p><p>twelve</p>
         </div></div>
     </body></rml>";
+}
+
+// (0.5.0) An `<input>` of every type a person types into, a textarea, and focusable controls that are not typing — one
+// of them a type RmlUi makes a text field natively, and one in capitals.
+fn string typingText()
+{
+    return "<rml><head><title>Typing</title><style>
+        body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
+        input, textarea, button { display: block; width: 200dp; height: 24dp; tab-index: auto; }
+    </style></head><body>
+        <input id='t-none'/><input id='t-empty' type=''/><input id='t-text' type='text'/>
+        <input id='t-password' type='password'/><input id='t-number' type='number'/><input id='t-search' type='search'/>
+        <input id='t-email' type='EMAIL'/><input id='t-url' type='url'/><input id='t-tel' type='tel'/>
+        <textarea id='t-area'></textarea>
+        <input id='n-checkbox' type='checkbox'/><input id='n-radio' type='radio'/><input id='n-range' type='range'/>
+        <input id='n-submit' type='submit'/><input id='n-date' type='date'/><button id='n-button'>Go</button>
+    </body></rml>";
+}
+
+// The ring put on the element with this id: "typing" when `textFocused` says so, "not" when it holds the ring and
+// says not, "no ring" when it would not take the ring.
+fn string typingOn(ref UiContext ui, const ref string id)
+{
+    int32 h = ui.findElement(elementId: id);
+    if (h == 0 || !ui.focusElement(handle: h)) { return "no ring"; }
+    if (ui.textFocused()) { return "typing"; }
+    return "not";
+}
+
+fn void ringIn(ref Tally t, ref UiContext ui, const ref string id, bool typing)
+{
+    string got = typingOn(ui: ui, id: id);
+    string want = "not";
+    if (typing) { want = "typing"; }
+    check(t: t, ok: got == want, what: "textFocused in #${id}: ${want} (${got})");
 }
 
 // More than 0.1.0's 511-byte web buffer held, with three-byte characters in it so a byte count cannot pass by luck.
@@ -738,6 +774,28 @@ fn void seamTests(ref Tally t)
     check(t: t, ok: rebuildChanges == 0, what: "...and none of it is a change (${rebuildChanges})");
 
     legTests(t: t, ui: ui, first: first, field: field);
+
+    section(what: "the seam: every control a person types into is typing (0.5.0)");
+    string typingDoc = typingText();
+    check(t: t, ok: ui.loadDocumentText(rml: typingDoc), what: "a document of every kind of input loads");
+    ui.update();
+    ringIn(t: t, ui: ui, id: "t-none", typing: true);
+    ringIn(t: t, ui: ui, id: "t-empty", typing: true);
+    ringIn(t: t, ui: ui, id: "t-text", typing: true);
+    ringIn(t: t, ui: ui, id: "t-password", typing: true);
+    ringIn(t: t, ui: ui, id: "t-number", typing: true);
+    ringIn(t: t, ui: ui, id: "t-search", typing: true);
+    ringIn(t: t, ui: ui, id: "t-email", typing: true);
+    ringIn(t: t, ui: ui, id: "t-url", typing: true);
+    ringIn(t: t, ui: ui, id: "t-tel", typing: true);
+    ringIn(t: t, ui: ui, id: "t-area", typing: true);
+    ringIn(t: t, ui: ui, id: "n-checkbox", typing: false);
+    ringIn(t: t, ui: ui, id: "n-radio", typing: false);
+    ringIn(t: t, ui: ui, id: "n-range", typing: false);
+    ringIn(t: t, ui: ui, id: "n-submit", typing: false);
+    ringIn(t: t, ui: ui, id: "n-date", typing: false);
+    ringIn(t: t, ui: ui, id: "n-button", typing: false);
+    collect(ui: ui);
 
     section(what: "the seam: closing the document, and one from text");
     ui.closeDocument();

@@ -40,6 +40,8 @@ mkdir -p "$out/profile"
 printf 'user_pref("dom.allow_scripts_to_close_windows", true);\n' > "$out/profile/user.js"
 "$KAMA" pkg install tests/kama.json >/dev/null
 "$KAMA" build tests/kama.json --target WASM -o "$out/tests.html"
+# The media suite's clip (0.5.0) is fetched by the browser as any `<video src>` is: served beside the page.
+cp "$ROOT/tests/fixtures/clip.webm" "$out/clip.webm"
 
 python3 -I "$ROOT/tools/web-test-server.py" "$out" "$PORT" 120 &
 server=$!

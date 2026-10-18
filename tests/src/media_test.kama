@@ -1,0 +1,253 @@
+// A `<video>`'s playback (0.5.0), on whichever leg this build is: the same checks against `ui::UiContext`. A browser
+// loads a clip's metadata and finishes a seek on its own time, so these run as ticks of the program's frame loop, as
+// the files' do: the first tick loads a document with a clip in it (tests/fixtures/clip.webm, two seconds of 64x48
+// VP8, served beside the page; tools/make-test-clip.py), later ticks wait for what the clip does (a frame budget per
+// step, not a clock). What is not a media element answers nothing on both legs. Natively nothing is one — RmlUi has no
+// decoder (host.kama) — so there the clip answers nothing too and no Media event arrives; where a leg plays media
+// (`playsMedia`), the clip's metadata, a seek, a play and a pause each answer and are heard.
+
+import {
+    Tally, check, section, fontPath, playsMedia,
+    ui::UiContext, ui::UiEvent, ui::UiEventKind,
+};
+export { MediaChecks };
+
+comptime int32 MEDIA_FRAMES = 600;   // ten seconds at sixty for each step: far more than a two-second local clip takes
+
+// A player (bound) holding the clip (bound too), and a paragraph that is no media element. `muted`, so a browser plays
+// it without a person's gesture (it has no sound in any case).
+fn string mediaDoc()
+{
+    string style = "body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; } div, p, video { display: block; } #player { width: 200dp; padding: 10dp; background-color: #202838ff; } video { width: 128dp; height: 96dp; }";
+    string body = "<div id='player'><video id='clip' src='clip.webm' muted='muted' preload='auto'></video></div><p id='plain'>Not a clip</p>";
+    return "<rml><head><style>${style}</style></head><body>${body}</body></rml>";
+}
+
+// The value, or -1 for None (a time and a length are never negative).
+fn float64 orNone(Optional<float64> v) { return match (v) { case None: -1.0; case Some(value: x): x; }; }
+
+// "true", "false" or "none".
+fn string pausedOf(Optional<bool> v)
+{
+    if (v.isNone()) { return "none"; }
+    bool p = match (v) { case None: false; case Some(value: x): x; };
+    if (p) { return "true"; }
+    return "false";
+}
+
+fn bool nearly(float64 a, float64 b, float64 within) { return a > b - within && a < b + within; }
+
+// Every media answer for the handle is None or false: what is not a media element, and natively everything.
+fn bool answersNothing(ref UiContext ui, int32 handle)
+{
+    Optional<float64> time = ui.mediaTime(handle: handle);
+    Optional<float64> length = ui.mediaDuration(handle: handle);
+    Optional<bool> paused = ui.mediaPaused(handle: handle);
+    return time.isNone() && length.isNone() && paused.isNone() && !ui.seekMedia(handle: handle, seconds: 1.0) &&
+           !ui.playMedia(handle: handle) && !ui.pauseMedia(handle: handle);
+}
+
+type resource MediaChecks {
+    Tally t;
+    UiContext ui;
+    int32 phase;      // 0 begin, 1 the metadata, 2 a seek, 3 a play, 4 done
+    int32 frames;     // ticks spent waiting in this phase
+    int32 player;
+    int32 clip;
+    int32 plain;
+    int32 heard;      // polls in this phase that brought a Media event
+    int32 others;     // events of any other kind, all phases (nothing here makes one)
+    string odd;       // the first poll whose Media events were not the player's then the clip's, one each; "" for none
+
+    public ctor make(Tally t)
+    {
+        this.t = t;
+        string font = fontPath();
+        this.ui = UiContext.open(width: 1280, height: 720, fontPath: font);
+        this.phase = 0;
+        this.frames = 0;
+        this.player = 0;
+        this.clip = 0;
+        this.plain = 0;
+        this.heard = 0;
+        this.others = 0;
+        this.odd = "";
+    }
+
+    public fn Tally tally() { return this.t; }
+
+    // One frame: true once every check has run.
+    public unsafe fn bool tick()
+    {
+        this.ui.update();
+        if (this.phase == 0) {
+            this.begin();
+            return this.phase == 4;
+        }
+        this.poll();
+        this.frames = this.frames + 1;
+        if (this.phase == 1) { this.metadata(); }
+        else if (this.phase == 2) { this.seeked(); }
+        else if (this.phase == 3) { this.played(); }
+        if (this.phase != 4) { return false; }
+        this.finish();
+        return true;
+    }
+
+    // Drain the queue: count a poll that brought Media events, and keep the first whose were not exactly the player's
+    // then the clip's — capture order, ancestors first, and one waiting at a time for each binding.
+    unsafe fn void poll()
+    {
+        string seen = "";
+        bool more = true;
+        while (more) {
+            Optional<UiEvent> e = this.ui.pollEvent();
+            match (e) {
+                case None: { more = false; }
+                case Some(value: ev): {
+                    bool media = match (ev.kind) { case Media: true; case _: false; };
+                    if (media) {
+                        string element = this.ui.elementId(handle: ev.element);
+                        string target = this.ui.elementId(handle: ev.target);
+                        string one = "${element}>${target}";
+                        if (seen.isEmpty()) { seen = copy one; } else { seen = "${seen},${one}"; }
+                    } else {
+                        this.others = this.others + 1;
+                    }
+                }
+            };
+        }
+        if (seen.isEmpty()) { return; }
+        this.heard = this.heard + 1;
+        if (seen != "player>clip,clip>clip" && this.odd.isEmpty()) { this.odd = copy seen; }
+    }
+
+    // The next phase, its frame budget and its count of polls heard afresh.
+    fn void next(int32 phase)
+    {
+        this.phase = phase;
+        this.frames = 0;
+        this.heard = 0;
+    }
+
+    // Out of frames waiting for `what`: a failed check saying how far it got, and on to the end.
+    fn bool late(const ref string what)
+    {
+        if (this.frames <= MEDIA_FRAMES) { return false; }
+        check(t: this.t, ok: false, what: "media: ${what} (nothing after ${this.frames} frames)");
+        this.next(phase: 4);
+        return true;
+    }
+
+    // A document with a clip, and what is not one; natively, the clip answering nothing.
+    unsafe fn void begin()
+    {
+        check(t: this.t, ok: this.ui.isOpen(), what: "media: the UI opens");
+        if (!this.ui.isOpen()) { this.next(phase: 4); return; }
+        this.ui.setDpRatio(ratio: 1.0);
+        this.ui.setViewport(offsetX: 0.0, offsetY: 0.0, scale: 1.0, visible: true);
+        string doc = mediaDoc();
+        check(t: this.t, ok: this.ui.loadDocumentText(rml: doc), what: "media: a document with a clip loads");
+        this.player = this.ui.bindElement(elementId: "player");
+        this.clip = this.ui.bindElement(elementId: "clip");
+        this.plain = this.ui.findElement(elementId: "plain");
+        check(t: this.t, ok: this.player > 0 && this.clip > 0 && this.plain > 0, what: "media: the player, the clip and a paragraph bind");
+
+        section(what: "media: what is not a media element answers nothing");
+        check(t: this.t, ok: answersNothing(ui: this.ui, handle: this.plain),
+              what: "a paragraph: no time, length or pause, and no seek, play or pause");
+        check(t: this.t, ok: answersNothing(ui: this.ui, handle: 0) && answersNothing(ui: this.ui, handle: 9999),
+              what: "...nor does handle 0, or one never given");
+
+        if (!playsMedia()) {
+            section(what: "media: a leg with no decoder");
+            check(t: this.t, ok: answersNothing(ui: this.ui, handle: this.clip),
+                  what: "the <video> answers nothing either: no time, length or pause, and no seek, play or pause");
+            int32 i = 0;
+            while (i < 30) {
+                this.ui.update();
+                i = i + 1;
+            }
+            this.poll();
+            check(t: this.t, ok: this.heard == 0 && this.others == 0, what: "...and raises no event (${this.heard}, ${this.others})");
+            this.next(phase: 4);
+            this.finish();
+            return;
+        }
+        this.next(phase: 1);
+    }
+
+    // The clip's metadata: its length known, at its start, paused, and heard by both bindings.
+    unsafe fn void metadata()
+    {
+        Optional<float64> length = this.ui.mediaDuration(handle: this.clip);
+        if (this.heard == 0 || length.isNone()) {
+            bool gaveUp = this.late(what: "the clip's metadata loads, heard as a Media event");
+            return;
+        }
+        section(what: "media: the clip's metadata");
+        float64 seconds = orNone(v: length);
+        check(t: this.t, ok: nearly(a: seconds, b: 2.0, within: 0.05), what: "the clip's length is known: two seconds (${seconds})");
+        float64 at = orNone(v: this.ui.mediaTime(handle: this.clip));
+        string paused = pausedOf(v: this.ui.mediaPaused(handle: this.clip));
+        check(t: this.t, ok: at == 0.0 && paused == "true", what: "...it is at its start, paused (${at}, ${paused})");
+
+        section(what: "media: a seek");
+        bool refused = !this.ui.seekMedia(handle: this.clip, seconds: -1.0);
+        check(t: this.t, ok: refused, what: "a seek to a negative time is refused");
+        check(t: this.t, ok: this.ui.seekMedia(handle: this.clip, seconds: 1.25), what: "a seek to 1.25 s is asked");
+        float64 now = orNone(v: this.ui.mediaTime(handle: this.clip));
+        check(t: this.t, ok: nearly(a: now, b: 1.25, within: 0.000001), what: "...and the time reads back at once (${now})");
+        this.next(phase: 2);
+    }
+
+    // The seek finished: heard, the time where it was asked, still paused.
+    unsafe fn void seeked()
+    {
+        if (this.heard == 0) {
+            bool gaveUp = this.late(what: "a finished seek is heard as a Media event");
+            return;
+        }
+        float64 at = orNone(v: this.ui.mediaTime(handle: this.clip));
+        string paused = pausedOf(v: this.ui.mediaPaused(handle: this.clip));
+        check(t: this.t, ok: nearly(a: at, b: 1.25, within: 0.001) && paused == "true",
+              what: "the finished seek is a Media event, the clip at 1.25 s and still paused (${at}, ${paused})");
+
+        section(what: "media: play and pause");
+        check(t: this.t, ok: this.ui.playMedia(handle: this.clip), what: "a play is asked");
+        string playing = pausedOf(v: this.ui.mediaPaused(handle: this.clip));
+        check(t: this.t, ok: playing == "false", what: "...and the clip is not paused, at once (${playing})");
+        this.next(phase: 3);
+    }
+
+    // Playing: heard, and the time moving on. Then a pause, at once.
+    unsafe fn void played()
+    {
+        float64 at = orNone(v: this.ui.mediaTime(handle: this.clip));
+        if (this.heard == 0 || at <= 1.25) {
+            bool gaveUp = this.late(what: "a playing clip is heard as a Media event, its time moving on");
+            return;
+        }
+        check(t: this.t, ok: true, what: "the clip plays: a Media event, and its time moves on (${at})");
+        check(t: this.t, ok: this.ui.pauseMedia(handle: this.clip), what: "a pause is asked");
+        string paused = pausedOf(v: this.ui.mediaPaused(handle: this.clip));
+        check(t: this.t, ok: paused == "true", what: "...and the clip is paused, at once (${paused})");
+        this.next(phase: 4);
+    }
+
+    // What every poll held, and a handle into a closed document answering nothing.
+    unsafe fn void finish()
+    {
+        if (!this.ui.isOpen()) { return; }
+        if (playsMedia()) {
+            section(what: "media: what was heard");
+            check(t: this.t, ok: this.odd.isEmpty(),
+                  what: "every poll's Media events were the player's then the clip's, one each ('${this.odd}')");
+            check(t: this.t, ok: this.others == 0, what: "...and nothing else was queued (${this.others})");
+        }
+        this.ui.closeDocument();
+        this.ui.update();
+        check(t: this.t, ok: answersNothing(ui: this.ui, handle: this.clip), what: "media: a clip's handle answers nothing once its document has gone");
+        this.ui.close();
+    }
+}

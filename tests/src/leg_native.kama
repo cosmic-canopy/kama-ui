@@ -16,8 +16,11 @@ import {
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
     typeInto, pick, legTests, pageLegTests, report,
-    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks,
+    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks, playsMedia,
 };
+
+// (0.5.0) RmlUi decodes no media: a `<video>` here is a plain element (host.kama, "media").
+fn bool playsMedia() { return false; }
 
 // RmlUi's sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence (tests/fonts/SOURCES).
 // Paths are relative to the package root, where tools/test.sh runs.

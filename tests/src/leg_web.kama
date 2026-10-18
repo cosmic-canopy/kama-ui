@@ -15,7 +15,7 @@ import {
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
     typeInto, pick, legTests, pageLegTests, report,
-    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks,
+    dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks, playsMedia,
 };
 
 extern "kama_ui_test.h";
@@ -49,6 +49,9 @@ extern fn void  kama_ui_test_spy_saves();
 extern fn int32 kama_ui_test_saved(UnsafePtr<cchar> buffer, int32 capacity);
 extern fn int32 kama_ui_test_bridge_is(int32 files, int32 index, UnsafeConstPtr<cchar> name);
 extern fn string kama_string_from_raw(UnsafeConstPtr<uint8> src, isize start, isize len);
+
+// (0.5.0) The browser plays a `<video>` itself, the clip served beside the page (tools/test-web.sh copies it there).
+fn bool playsMedia() { return true; }
 
 // Ignored on this leg: the browser takes its faces from the page's @font-face.
 fn string fontPath() { return ""; }

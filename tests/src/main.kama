@@ -3,24 +3,30 @@
 // on both; the seam suite runs the same checks against whichever `UiContext` this build has. A failing case prints its
 // name; the last line counts them.
 //
-// The files' checks (0.4.0) come last, as ticks of the program's frame loop (`std::app::run`): a read finishes on its
-// own time on the web, so they need the page to have its event loop between frames. On the web `run` does not return,
-// so the report is made from the last tick; natively the loop returns and `main` hands back the verdict.
+// The files' checks (0.4.0) and then the media's (0.5.0) come last, as ticks of the program's frame loop
+// (`std::app::run`): a read, a clip's metadata and a seek finish on their own time on the web, so they need the page to
+// have its event loop between frames. On the web `run` does not return, so the report is made from the last tick;
+// natively the loop returns and `main` hands back the verdict.
 
 import {
-    Tally, uidocTests, navTests, seamTests, pageTests, report, FileChecks,
+    Tally, uidocTests, navTests, seamTests, pageTests, report, FileChecks, MediaChecks,
     std::app::run, std::app::TickFn, std::memory::Owned,
 };
 
-// What the loop ticks: the files' checks, and the verdict once they are done.
+// What the loop ticks: the files' checks, then the media's, and the verdict once they are done. ⚠️ ONE UI OPEN AT A
+// TIME, as a program has: each set opens its own, and two at once would share the web's one page (`open` there starts
+// it afresh) and natively RmlUi itself (a `close` shuts it down). So the media's are made, on the heap, only once the
+// files' have closed theirs, and dropped before the verdict.
 type resource Run {
     FileChecks files;
+    UnsafePtr<MediaChecks> media;   // null until the files' checks are done
     int32 code;
     bool done;
 
     public unsafe ctor make(Tally t)
     {
         this.files = FileChecks.make(t: t);
+        this.media = null;
         this.code = 1;
         this.done = false;
     }
@@ -28,8 +34,17 @@ type resource Run {
     public unsafe fn int32 tick()
     {
         if (this.done) { return 0; }
-        if (!this.files.tick()) { return 1; }
-        Tally t = this.files.tally();
+        if (this.media == null) {
+            if (!this.files.tick()) { return 1; }
+            Tally afterFiles = this.files.tally();
+            Owned<MediaChecks> made = new MediaChecks.make(t: afterFiles);
+            this.media = made.release();
+            return 1;
+        }
+        if (!this.media[0].tick()) { return 1; }
+        Tally t = this.media[0].tally();
+        Owned<MediaChecks> back = Owned.adopt(raw: this.media);
+        this.media = null;
         this.code = report(t: t);
         this.done = true;
         return 0;

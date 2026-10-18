@@ -196,4 +196,16 @@ extern void    kama_ui_web_read_release(int32_t read);
 // A download of `count` bytes as `name` (`type` its media type): 1 when offered.
 extern int32_t kama_ui_web_save_file(const char* name, const char* type, const uint8_t* bytes, int32_t count);
 
+// ---- 0.5.0: media ----
+// A `<video>` or `<audio>`'s `currentTime` and `duration` in seconds, -1 for none (not a media element, or a length not
+// known yet or without end), and `paused` (-1 none, 0 playing, 1 paused). A seek writes `currentTime` (0 when refused:
+// not a media element, or a time negative, NaN or infinite); a play calls `play()`, whose refusal is swallowed; a
+// pause calls `pause()`. 1 when asked of a media element.
+extern double  kama_ui_web_media_time(int32_t handle);
+extern double  kama_ui_web_media_duration(int32_t handle);
+extern int32_t kama_ui_web_media_paused(int32_t handle);
+extern int32_t kama_ui_web_seek_media(int32_t handle, double seconds);
+extern int32_t kama_ui_web_play_media(int32_t handle);
+extern int32_t kama_ui_web_pause_media(int32_t handle);
+
 #endif  // KAMA_UI_WEB_H

@@ -11,8 +11,9 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: published** (registry.kama-lang.org, 0.3.0 on 2026-10-14; 0.4.0 is unreleased). Needs **kama ≥ 0.9.577**. Tested natively on Linux x86_64 (debug, release and
-> AddressSanitizer) and in headless Firefox 157 (emcc 6.0.9).
+> **Status: published** (registry.kama-lang.org, 0.4.0 on 2026-10-15; 0.5.0 is unreleased). Needs **kama ≥ 0.9.577**;
+> tested with 0.9.667. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
+> (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
 same contract. Only `native.kama` changes. The documents, the web leg and every program using `UiContext` stay as they
@@ -25,6 +26,8 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 - a focus ring driven by TAB, the arrows and ENTER;
 - tooltips from `title`, and drag and drop from `draggable`, onto zones marked `droppable`, saying where it landed;
 - files into and out of the page: chosen, dropped from outside, pasted, read in slices, offered to save;
+- a `<video>` or `<audio>` element's playback: its time, length and pause, a seek, play and pause, and an event when
+  any of it changes (on the web only today: RmlUi decodes no media, so natively every answer is None or false);
 - quiet writes into controls, classes, attributes, inline properties and plain text;
 - a clipboard the program bridges;
 - recorded draw commands and textures.
@@ -40,12 +43,13 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 | frame | `setSize`, `setViewport(offsetX, offsetY, scale, visible)`, `setDpRatio`, `update()`, `updateAt(seconds)`, `render()` |
 | drawing (native) | `commandCount`, `command(i)` → `UiCommand` (`kind`, vertices, indices, texture, translation, scissor, transform), `textureCount`, `texture(h)`, `textureGeneration(h)` |
 | pointer (native) | `mouseMove`, `mouseButton(button, down, mods)`, `mouseWheel` |
-| keyboard | `key(code, down, mods)` with `UI_KEY_*` (GLFW's numbers) and `UI_MOD_*`, `claimKey(key, mods)`, `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` |
+| keyboard | `key(code, down, mods)` with `UI_KEY_*` (GLFW's numbers) and `UI_MOD_*`, `claimKey(key, mods)`, `typeChar(codepoint)`, `focusHeld()`, `focusDocument()`, `focusElement(h)`, `focusedElement()`, `textFocused()` (any control a person types into) |
 | clipboard | `copyText(text)`, `provideClipboard(text)` / `takeClipboardWrite()` (native; no-op / None on the web) |
 | files | `chooseFiles(accept, multiple)` → a file list, `fileCount` / `fileName` / `fileSize` / `fileType` / `filePath(files, i)`, `releaseFiles`, `readFile(files, i, offset, count)` → a read, `readBytes(read, into)`, `readError(read)`, `saveFile(name, bytes)`; `uiFileType(name)` |
+| media (web; None / false natively) | `mediaTime(h)` / `mediaDuration(h)` → `Optional<float64>` seconds, `mediaPaused(h)` → `Optional<bool>`, `seekMedia(h, seconds)`, `playMedia(h)`, `pauseMedia(h)` → bool (asked) |
 | files (native, the program's half) | `takeFileRequest()`, `fileRequestAccept` / `fileRequestMultiple`, `provideFiles(files, paths)`, `dropFiles(paths, x, y)`, `pasteFiles(paths)`, `takeSaveRequest()`, `saveRequestName`, `saveRequestBytes` (0 and no-ops on the web) |
 | elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `elementContent(h)` / `setElementContent(h, text)` (plain text), `scrollToEnd(h)`, `isScrolledToEnd(h)`, `scrollIntoView(h)` |
-| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop \| Files \| Paste \| Read, element, target, source, key, mods, files, atX, atY }` |
+| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop \| Files \| Paste \| Read \| Media, element, target, source, key, mods, files, atX, atY }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
 `ui::UiNav` turns a pad's d-pad and stick into arrow presses (hysteresis, one direction at a time, delay then repeat).
@@ -124,6 +128,28 @@ The rules that matter most:
   - `saveFile` offers bytes to save under a name: a download on the web, a save request for the program natively.
   On the web a file stays the browser's `File` until a read asks, and another library takes it whole from
   `Module.kamaUiFile(files, index)` (a fetch's body: an upload never copies the file into wasm memory).
+- **Media** (0.5.0): a `<video>` or `<audio>` by handle. `mediaTime` and `mediaDuration` are seconds (`float64`; the
+  length None until the metadata has loaded), `mediaPaused` whether it is paused; each None for what is not a media
+  element. `seekMedia(h, seconds)` reads back at once and is followed by a `Media` event once the frame there is
+  decoded; `playMedia` and `pauseMedia` say whether they were asked (a browser may refuse to play a clip with sound
+  without a person's gesture: `mediaPaused` says). A `Media` event says only that something changed — the metadata
+  loaded, a play, a pause, a seek finished, the time moved while playing — so read the state. Media events do not
+  bubble in the DOM, so they are heard in the capture phase, as Focus: a bound container hears its clips', ancestors
+  first. One waits at a time per binding and clip. A frame picker:
+
+  ```kama
+  // A step button's Click: one frame on, for a clip of 24 frames a second.
+  ui.pauseMedia(handle: clip);
+  Optional<float64> at = ui.mediaTime(handle: clip);
+  match (at) { case Some(value: t): { ui.seekMedia(handle: clip, seconds: t + 1.0 / 24.0); } case None: { } };
+  // A Media event naming `clip` (the seek finished, or it played on): show `mediaTime` as the frame picked.
+  ```
+
+  **On the web only, today.** RmlUi decodes no media, so natively every answer is None or false whatever the handle
+  names, and a `Media` event never arrives; the same document still loads there, the clip an empty box.
+- **`textFocused()` is any control a person types into** (0.5.0): a `<textarea>`, and an `<input>` whose type is absent,
+  `text`, `password`, `number`, `search`, `email`, `url` or `tel`, in any case. A page checks it before a shortcut
+  (Ctrl+Z, Ctrl+A, a bare letter) so the field's own keys stay the field's.
 - **Tooltips: `title`.** After half a second of hover, on the program's clock (so call `update` or `updateAt` every
   frame on the web too), the package shows the title in `#kama-ui-tooltip`. The document styles `.ui-tooltip`. It
   hides on leaving, on a press and on a scroll. On the web the attribute is held as `data-kama-ui-title`, so the
@@ -268,6 +294,9 @@ Build the program with `--target WASM`. This package's `jsLibraries` and `emSett
   counts a person's gesture (a few seconds after the click or the key); otherwise it answers 0. Dropped and pasted
   files come from the browser's own events, and a file dropped anywhere in the window is never opened as a page while
   a document is up. `saveFile` is a download. `Module.kamaUiFile(files, index)` hands another library the `File`.
+- **Media** is the element's own: `currentTime`, `duration` and `paused` read, `currentTime` written for a seek, and
+  `play()` (its refusal swallowed) and `pause()`. A clip's `src` is fetched by the browser, so it is served beside the
+  page, as an image is.
 - `mouseMove`, `mouseButton`, `mouseWheel`, `render`, `typeChar`, `setDpRatio`, `loadFont`, `provideImage` and
   `provideClipboard` are no-ops here, and `takeClipboardWrite` is always None: the browser does those itself. So are
   the files' native half (`takeFileRequest` and `takeSaveRequest` always 0).
@@ -293,6 +322,9 @@ every selector under `#ui-root`, mapping `body` and RmlUi's scrollbar elements. 
 - Inline properties set with `setElementProperty` may use `dp`. The web leg rewrites it to `px`.
 - Text another person typed goes through `ui::uidoc::escapeText` before `setInnerRml`. On the web an unescaped `<` is
   script injection.
+- **Close a `<video>` or `<audio>` with its own end tag**, `<video id='clip' src='clip.webm'></video>`, never `/>`.
+  RML is XML, where both mean the same; HTML ignores the `/` on an element that is not void, so the rest of the
+  document would end up inside the clip.
 - Not drawn natively yet: `box-shadow`, `filter` and gradients ([`@kama/rmlui`'s README](https://github.com/cosmic-canopy/kama-rmlui), "Not here yet").
 
 ## Tests
@@ -346,6 +378,16 @@ The two scripts build one program, `tests/`. Shared on both legs:
     8 bytes, `application/json`; no chooser without a document;
   - plain text written and read, ignored by a form control; a select's options rebuilt, appended to and trimmed with
     its value settled and no change;
+  - **what counts as typing** (0.5.0): the ring on an `<input>` with no type, an empty one, `text`, `password`,
+    `number`, `search`, `EMAIL` (in capitals), `url` and `tel`, and a textarea, each `textFocused`; on a checkbox, a
+    radio, a range, a submit, a `date` (a text field natively) and a button, each not;
+  - **media** (0.5.0), as ticks of the frame loop after the files': a paragraph, handle 0 and an unknown handle
+    answering nothing; then on the web a two-second VP8 clip (`tests/fixtures/clip.webm`, made by
+    `tools/make-test-clip.py`) with its metadata heard and its length known, at its start and paused; a seek to a
+    negative time refused, one to 1.25 s reading back at once and heard when it finishes; a play heard with the time
+    moving on, and a pause taking at once; every poll's Media events being the player's then the clip's, one each
+    (capture order, one waiting at a time), and nothing else; and a handle into the closed document answering
+    nothing. Natively the clip answers nothing and raises no event;
   - closing the document;
   - `close()`;
   - **a page** (`openPage`): shown without `setViewport` at the window's corner, and an `overflow: auto` box scrolled by
@@ -385,10 +427,11 @@ dragstart, dragenter, dragover, drop, dragend; a key is a keydown at the focused
   highlighted while files are dragged over and not once they leave, `Module.kamaUiFile` handing over the `File`, and
   text dragged in from outside reaching nothing.
 
-Results: **native 260 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
-leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 269 checks**, passing in headless
-Firefox. The native leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never
-published.
+Results: **native 285 checks**, passing in debug, in release and under AddressSanitizer with leak checking. The ASan
+leg wraps `cc`/`c++`, so RmlUi, FreeType and both shims are instrumented. **Web 305 checks**, passing in headless
+Firefox. The web leg serves the media suite's clip beside the page (`tools/test-web.sh` copies it there). The native
+leg's font is Lato (SIL OFL 1.1), committed under `tests/fonts/` with its licence and never published; nor is the clip,
+which the package's own code made (`tools/make-test-clip.py`, with PyAV).
 
 The web verdict comes back over HTTP. The page POSTs `{run, failed, output}` to `tools/web-test-server.py`, so nothing
 reads a screenshot or a DOM dump. The page then closes its own window, which ends the browser. A failing check makes

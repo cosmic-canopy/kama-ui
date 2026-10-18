@@ -4,7 +4,7 @@ Found while extracting the UI seam into this package (2026-10-13). Each was run 
 packaging gaps are in [../kama-rmlui/KAMA_GAPS.md](../kama-rmlui/KAMA_GAPS.md): a dependency cannot be gated by
 target (so this package's web build compiles FreeType for nothing), and the older link-time ones.
 
-**Current compiler:** `kama 0.9.577+g660b7812` (`../kama`).
+**Current compiler:** `kama 0.9.667+g7034eef0` (`../kama`); 0.4.0 needed no change to build on it.
 
 ---
 

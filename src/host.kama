@@ -7,7 +7,8 @@
 // marked too: what the rest of a tool page needs — appending to and trimming a list, keys and shortcuts, focus, double
 // clicks, drag and drop, tooltips, the clipboard, and plain text. (0.2.2 was never published; 0.3.0 carries it.) 0.4.0's
 // are files into and out of the page — chosen, dropped from outside, pasted, read, offered to save — and drop zones
-// (`droppable="true"`) with where a drop landed.
+// (`droppable="true"`) with where a drop landed. 0.5.0's are a `<video>` or `<audio>` element's playback (its time,
+// length and pause, a seek, play and pause, and a `Media` event), and `textFocused` counting every typing `<input>`.
 //
 // WHAT THE PROGRAM DOES NATIVELY, because it owns the window (the web's browser does all of it itself):
 //   - forward EVERY key it does not keep for itself to `key`, with its modifiers (Cmd as UI_MOD_CTRL), and every
@@ -333,6 +334,36 @@ type contract UiHost for value {
     fn string saveRequestName(int32 save);
     fn bool saveRequestBytes(int32 save, ref DynamicArray<uint8> into);
 
+    // ---- media (0.5.0) ----
+    //
+    // A `<video>` or `<audio>` element's playback: what a page needs to pick a frame of a clip — where it is, moving it
+    // there, how long it is, and hearing when any of that changes. Seconds, as a `float64` (a frame of a long clip
+    // needs more than a float32's seven digits).
+    //
+    // ON THE WEB ONLY, FOR NOW. Natively the toolkit has no media element (RmlUi decodes no video or audio; a decoder
+    // is future work): there every one of these answers None or false, whatever the handle names, and a `Media` event
+    // never arrives. A document may still carry the element, which lays out as an empty box natively.
+    //
+    // `mediaTime` is the current position; `mediaDuration` the clip's length once its metadata has loaded (None before
+    // it has, and for a stream with no end); `mediaPaused` whether it is paused (true before it has ever played). Each
+    // is None for 0, an unknown or stale handle, and an element that is not a `<video>` or `<audio>`.
+    fn Optional<float64> mediaTime(int32 handle);
+    fn Optional<float64> mediaDuration(int32 handle);
+    fn Optional<bool> mediaPaused(int32 handle);
+
+    // Move the clip to `seconds`. True when it was asked: the handle names a media element and `seconds` is a finite
+    // number >= 0 (false for anything else). The position reads back at once from `mediaTime` — clamped to the clip by
+    // the browser once its length is known — and a `Media` event follows when the frame there has been decoded. A seek
+    // asked before the metadata has loaded is where the clip starts once it has. A seek does not play or pause.
+    fn bool seekMedia(int32 handle, float64 seconds);
+
+    // Play or pause the clip. True when it was asked of a media element. A pause takes effect at once (`mediaPaused`
+    // reads true). A play is the browser's to allow: `mediaPaused` reads false at once when it is allowed, and a
+    // `Media` event follows as it starts; a clip with sound, with no person's gesture behind it, may be refused, and
+    // then `mediaPaused` still reads true and no event arrives. Natively both answer false.
+    fn bool playMedia(int32 handle);
+    fn bool pauseMedia(int32 handle);
+
     // ---- the clipboard (0.3.0) ----
     //
     // `copyText` puts text on the clipboard — a Copy button. On the web the browser's clipboard takes it
@@ -371,7 +402,15 @@ type contract UiHost for value {
     //   - a Ctrl+click is a Click with `mods` UI_MOD_CTRL;
     //   - (0.4.0) files are a Drop, a Files or a Paste with their list, and a finished read a Read. Natively those the
     //     program forwards (`provideFiles`, `dropFiles`, `pasteFiles`) and a read's end come after the document's own
-    //     events of that frame.
+    //     events of that frame;
+    //   - (0.5.0, on the web only) a `<video>` or `<audio>` is a Media when its metadata has loaded, it plays or
+    //     pauses, a seek has finished, or its time moves while it plays (a few times a second). `target` names it by
+    //     the usual rule; the event says only that something changed, so read `mediaTime`, `mediaDuration` and
+    //     `mediaPaused`. ⚠️ A browser's media events do not bubble, so the web hears them in the capture phase, as
+    //     Focus: a bound container hears its clips' (ancestors first). And ONE WAITS AT A TIME per bound element and
+    //     media element: a Media not yet polled absorbs the next, so a seek (whose time moves, then it finishes) or a
+    //     frame's worth of playback is one event at the next poll. A clip whose metadata loaded before anything
+    //     listening was bound raised its event to nobody: read the state once after binding too.
     // CHANGED (0.2.0): ONE CHANGE PER EDIT, the same count on both legs, for
     // every kind of control — each character typed into a text field or a textarea, each step of a range (live, as a
     // slider previews), each toggle of a checkbox, each choice of a radio or an option. A commit is no edit: ENTER in a
@@ -394,7 +433,12 @@ type contract UiHost for value {
     fn bool focusElement(int32 handle);
     fn int32 focusedElement();
 
-    // The ring is in a text control (<input type="text|password">, <textarea>): a printable key is typing, not a verb.
+    // The ring is in a text control: a printable key is typing, not a verb, and the control's own Ctrl+Z, Ctrl+A or
+    // Home belongs to it rather than to a page's shortcut. CHANGED (0.5.0): every control a person types into, the same
+    // on both legs — a `<textarea>`, and an `<input>` whose `type` is absent (or empty), `text`, `password`, `number`,
+    // `search`, `email`, `url` or `tel`, in any case (it was `text` and `password` only). Any other type is not, on
+    // either leg, even where one leg would still take typing there (natively RmlUi makes a type it does not know a
+    // text field).
     fn bool textFocused();
 
     // RmlUi's `dp` unit: one dp is `ratio` framebuffer pixels, so text rasterises at its final size. A no-op on the web,
