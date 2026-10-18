@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.5.0] — unreleased
+## [0.5.0] — 2026-10-18
 
 A `<video>` or `<audio>` element's playback — where it is, a seek, its length, play and pause, and an event when any
 of it changes — which is what a page needs to pick a frame of a clip; and `textFocused` counting every control a
