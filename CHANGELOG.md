@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.5.1] — unreleased
+## [0.5.1] — 2026-10-20
 
 A fix to `findElement`, on both legs. Built on @kama/rmlui 0.2.0, unchanged, and tested with kama 0.9.675.
 
