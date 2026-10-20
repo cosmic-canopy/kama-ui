@@ -421,13 +421,15 @@ fn void seamTests(ref Tally t)
           what: "...every call on it is a no-op");
     string goneId = ui.elementId(handle: row0);
     check(t: t, ok: goneId == "row0", what: "...it keeps its id ('${goneId}')");
+    check(t: t, ok: ui.findElement(elementId: "row0") == 0,
+          what: "...and findElement answers 0 for that id, named before: no element has it now");
     Seen released = collect(ui: ui);
     check(t: t, ok: released.count == 0, what: "...and nothing it did raised an event (${released.count})");
     ui.setInnerRml(handle: rows, rml: "<p id='row0'>back</p>");
     ui.update();
     UiRect back0 = ui.elementRect(handle: row0);
-    check(t: t, ok: back0.height > 0.0 && ui.bindElement(elementId: "row0") == row0,
-          what: "...until its id is back: then the same handle names the new element (${back0.height} high)");
+    check(t: t, ok: back0.height > 0.0 && ui.bindElement(elementId: "row0") == row0 && ui.findElement(elementId: "row0") == row0,
+          what: "...until its id is back: then the same handle names the new element, found too (${back0.height} high)");
 
     section(what: "the seam: one binding on a list tells its rows apart");
     int32 list = ui.bindElement(elementId: "list");

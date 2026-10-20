@@ -1172,11 +1172,19 @@ type value UiContext implements UiHost {
     }
 
     // A binding with no `listen`: @kama/rmlui's bindings carry only the listeners asked of them.
+    // 0 when no element has the id now, as on the web: a binding named before outlives its element (it names the next
+    // one with its id), so the binding is asked for its element (FIXED 0.5.1: it answered the handle with none).
     public unsafe fn int32 findElement(const ref string elementId)
     {
         if (this.ready == 0) { return 0; }
         Optional<Binding> b = this.doc.bind(id: elementId);
-        return match (b) { case None: 0; case Some(value: x): x.handle(); };
+        return match (b) {
+            case None: 0;
+            case Some(value: x): {
+                Optional<Element> e = x.element();
+                := match (e) { case None: 0; case Some(value: _): x.handle(); };
+            }
+        };
     }
 
     // Touched first: a binding whose document has gone is forgotten on its first use, so its id then reads "" — as on

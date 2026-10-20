@@ -1148,18 +1148,21 @@ mergeInto(LibraryManager.library, {
         return lengthBytesUTF8(s);
     },
 
-    // `findElement`: `kama_ui_web_bind` without the listener (`$KamaUi.name`).
+    // `findElement`: `kama_ui_web_bind` without the listener (`$KamaUi.name`). 0 when no element has the id NOW, named
+    // before or not: a handle stays its id's (it names the element again once one has the id), but finding it
+    // answers whether there is one (FIXED 0.5.1: an id named before answered its handle with its element gone).
     kama_ui_web_find__deps: ['$KamaUi'],
     kama_ui_web_find: function (idPtr) {
         if (!KamaUi.root) return 0;
         var id = UTF8ToString(idPtr);
         if (!id) return 0;
-        if (KamaUi.ids.indexOf(id) < 0) {
+        var at = KamaUi.ids.indexOf(id);
+        if (at < 0) {
             var el = KamaUi.root.querySelector('#' + CSS.escape(id));
             if (!el) return 0;
             return KamaUi.name(id, el);
         }
-        return KamaUi.name(id, null);
+        return KamaUi.el(at + 1) ? at + 1 : 0;
     },
 
     // `scrollToEnd` (0.2.1): at once, because reading `scrollHeight` makes the browser lay out what was just written —

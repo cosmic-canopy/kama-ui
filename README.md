@@ -11,8 +11,8 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: published** (registry.kama-lang.org, 0.4.0 on 2026-10-15; 0.5.0 is unreleased). Needs **kama ≥ 0.9.577**;
-> tested with 0.9.667. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
+> **Status: published** (registry.kama-lang.org, 0.5.0 on 2026-10-18; 0.5.1 is unreleased). Needs **kama ≥ 0.9.577**;
+> tested with 0.9.675. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
 > (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
@@ -74,7 +74,8 @@ The rules that matter most:
   `elementId` turns it into the row's id. Poll before you rewrite: a target the rewrite destroyed reads as 0.
 - **Name what you only write to with `findElement`.** It gives the handle `bindElement` would, without listening: a
   list rewritten with `setInnerRml`, a row given a class, a box measured. Nothing is queued for it, and it does not
-  hear its children.
+  hear its children. It is 0 when no element has the id now, even one named before (0.5.1), so it also answers
+  whether an element is there.
 - **One change per edit, the same count on both legs**: each character typed into a text field or a textarea, each
   step of a range (live, as a slider previews), each toggle of a checkbox, each choice of a radio or an option. A
   commit is no edit: ENTER in a text field, a field losing focus, a slider let go, and the radio a choice unchecks.
@@ -353,7 +354,8 @@ The two scripts build one program, `tests/`. Shared on both legs:
   - one binding on a list: a click on each row naming the row (or the row's text, by its own id), a target being the
     handle `bindElement` gives, and naming one adding no listener;
   - `findElement`: a found element's click raising nothing, a found container not hearing its children, a found handle
-    taking a write and a rewrite, and binding it later giving the same handle, which then hears;
+    taking a write and a rewrite, and binding it later giving the same handle, which then hears; 0 for an id named
+    before whose element a rewrite removed, and the same handle once it is back (0.5.1);
   - **one change per edit, counted per control**: three characters typed into a text field, two into a textarea, a
     range step, a range step past its end (none), a checkbox toggle, a radio choice (one, though RmlUi also unchecks
     the neighbour), an option picked, and ENTER in a text field (none);

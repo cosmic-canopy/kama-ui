@@ -5,6 +5,18 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] — unreleased
+
+A fix to `findElement`, on both legs. Built on @kama/rmlui 0.2.0, unchanged, and tested with kama 0.9.675.
+
+### Fixed
+
+- **`findElement` answers 0 when no element has the id**, as its contract says, on both legs. An id named before (found,
+  bound, or an event's target) answered its old handle after a rewrite had removed its element, so a program asking
+  whether an element is there (a form's optional control, drawn for one choice and not another) read a gone one as
+  present, with an empty value. The handle itself is unchanged: it names the element again once one has the id.
+  Found by forge's page (a Fill form whose preset select was drawn for one tool, then not for the next).
+
 ## [0.5.0] — 2026-10-18
 
 A `<video>` or `<audio>` element's playback — where it is, a seek, its length, play and pause, and an event when any
