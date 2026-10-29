@@ -80,4 +80,7 @@ unsafe fn int32 start()
     return code;
 }
 
-fn int32 main() { return start(); }
+fn uint8 main() {
+    int32 code = start();
+    return code > 255 ? 255 : cast<uint8>(code);   // the count, at most what an exit status keeps
+}

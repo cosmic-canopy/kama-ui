@@ -115,18 +115,18 @@ fn string rmlToHtml(const ref string rml)
 fn string between(const ref string src, const ref string open, const ref string close)
 {
     string result = "";
-    Optional<usize> a = src.find(substring: open);
+    Optional<isize> a = src.find(substring: open);
     match (a) {
         case None: { }
         case Some(value: p): {
-            isize from = cast<isize>(p) + open.length();
+            isize from = p + open.length();
             isize n = src.length();
             string tail = src.substring(start: from, end: n);
-            Optional<usize> b = tail.find(substring: close);
+            Optional<isize> b = tail.find(substring: close);
             match (b) {
                 case None: { result = copy tail; }
                 case Some(value: q): {
-                    isize to = cast<isize>(q);
+                    isize to = q;
                     result = tail.substring(start: 0, end: to);
                 }
             };
@@ -144,25 +144,25 @@ fn string stripSpans(const ref string src, const ref string open, const ref stri
     string rest = copy src;
     bool going = true;
     while (going) {
-        Optional<usize> a = rest.find(substring: open);
+        Optional<isize> a = rest.find(substring: open);
         match (a) {
             case None: {
                 acc = "${acc}${rest}";
                 going = false;
             }
             case Some(value: p): {
-                isize cut = cast<isize>(p);
+                isize cut = p;
                 string head = rest.substring(start: 0, end: cut);
                 acc = "${acc}${head}";
 
                 isize from = cut + open.length();
                 isize n = rest.length();
                 string tail = rest.substring(start: from, end: n);
-                Optional<usize> b = tail.find(substring: close);
+                Optional<isize> b = tail.find(substring: close);
                 match (b) {
                     case None: { going = false; }
                     case Some(value: q): {
-                        isize skip = cast<isize>(q) + close.length();
+                        isize skip = q + close.length();
                         isize m = tail.length();
                         rest = tail.substring(start: skip, end: m);
                     }
@@ -239,27 +239,27 @@ fn string scopeSelectors(const ref string css)
     bool going = true;
 
     while (going) {
-        Optional<usize> ob = rest.find(substring: "{");
+        Optional<isize> ob = rest.find(substring: "{");
         match (ob) {
             case None: {
                 // Trailing whitespace after the last rule. Nothing to map.
                 going = false;
             }
             case Some(value: p): {
-                isize cut = cast<isize>(p);
+                isize cut = p;
                 string sel = rest.substring(start: 0, end: cut);
                 string mapped = mapSelectorList(sel: sel);
 
                 isize n = rest.length();
                 string tail = rest.substring(start: cut, end: n);
-                Optional<usize> cb = tail.find(substring: "}");
+                Optional<isize> cb = tail.find(substring: "}");
                 match (cb) {
                     case None: {
                         acc = "${acc}${mapped}${tail}\n";
                         going = false;
                     }
                     case Some(value: q): {
-                        isize endAt = cast<isize>(q) + 1;
+                        isize endAt = q + 1;
                         isize m = tail.length();
                         string block = tail.substring(start: 0, end: endAt);
                         acc = "${acc}${mapped}${block}\n";

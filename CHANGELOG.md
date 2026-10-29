@@ -5,6 +5,17 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] — unreleased
+
+Builds on kama 0.9.758, no change to what it does. Built on @kama/rmlui 0.2.0, unchanged.
+
+### Fixed
+
+- **It builds on kama 0.9.758**, whose `find` answers an `Optional<isize>` (the size type) and which refuses a
+  statement no path reaches: six `find` results in `uidoc/rml.kama` held as `isize` (their casts gone), the return
+  after the native `UiContext.pollEvent`'s endless loop deleted, and the tests' `main` an exit status (`uint8`). Found by forge's
+  page, which could not build on 0.9.758.
+
 ## [0.5.1] — 2026-10-20
 
 A fix to `findElement`, on both legs. Built on @kama/rmlui 0.2.0, unchanged, and tested with kama 0.9.675.
