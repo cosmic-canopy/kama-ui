@@ -11,8 +11,8 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: published** (registry.kama-lang.org, 0.5.1 on 2026-10-20). Needs **kama ≥ 0.9.577**;
-> tested with 0.9.675. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
+> **Status: published** (registry.kama-lang.org, 0.5.2 on 2026-10-29). Needs **kama ≥ 0.9.758**;
+> tested with 0.9.758. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
 > (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this

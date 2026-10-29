@@ -3,7 +3,7 @@
   "version": "0.5.2",
   "license": "MIT OR Apache-2.0",
   "kind": "library",
-  "kama": ">=0.9.577",
+  "kama": ">=0.9.758",
   "description": "One set of HTML documents for kama UIs: the browser's own DOM on the web, RmlUi natively",
   "keywords": ["ui", "html", "dom", "rmlui", "gui"],
   "repository": "https://github.com/cosmic-canopy/kama-ui",

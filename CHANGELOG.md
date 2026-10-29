@@ -5,9 +5,15 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.5.2] — unreleased
+## [0.5.2] — 2026-10-29
 
-Builds on kama 0.9.758, no change to what it does. Built on @kama/rmlui 0.2.0, unchanged.
+Builds on kama 0.9.758, no change to what it does. Needs **kama ≥ 0.9.758**, up from 0.9.577. Built on @kama/rmlui
+0.2.0, unchanged.
+
+### Changed
+
+- **Needs kama 0.9.758**, up from 0.9.577. `find` answers an `Optional<isize>` from kama 0.9.706, so the code below
+  that holds its results no longer type-checks on an older compiler; 0.9.758 is the one this release was tested on.
 
 ### Fixed
 

@@ -22,7 +22,7 @@
 // re-run that experiment, so this comment says so rather than guessing in either direction. An FFI
 // header holding declarations and no definitions is right on its own merits — it is what lets the
 // same header be included from anywhere without thinking about how many TUs got it. (Measured under
-// kama 0.9.4xx; this package builds with 0.9.577.)
+// kama 0.9.4xx; this package builds with 0.9.758.)
 //
 // ⚠️ AND THIS BACKEND EMITS NO DRAW COMMANDS AT ALL, WHICH IS THE WHOLE DESIGN. RmlUi hands geometry
 // to a recording render interface because it has no way to put pixels anywhere; a browser lays out
