@@ -13,7 +13,9 @@
       (`draggable="true"`), and the package's two drag classes change their width, which a box shows on both legs.
       The zone (0.4.0) is `droppable="true"` inside a bound box, placed to the right where it moves nothing else and
       covers no centre a click aims at (the heading's is at the stage's middle, above it), in the web page's view: its top
-      row has an id of its own, which a drop on it must NOT name, and the class shows on the zone alone.
+      row has an id of its own, which a drop on it must NOT name, and the class shows on the zone alone. (0.6.0) A
+      scrollbar has a width: RmlUi gives a select's box one, and unstyled it spans the box, over the options a click
+      aims at.
     -->
     <style>
         body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
@@ -42,6 +44,8 @@
         select selectvalue { display: block; height: 24dp; }
         select selectbox { display: block; background-color: #303030ff; }
         select selectbox option { display: block; height: 20dp; }
+        scrollbarvertical { width: 8dp; }
+        scrollbarvertical sliderbar { min-height: 10dp; }
         #choices input { width: 20dp; height: 20dp; }
         #zones { position: absolute; left: 360dp; top: 80dp; width: 300dp; background-color: #303828ff; }
         #zone { width: 280dp; height: 48dp; }

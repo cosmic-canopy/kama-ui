@@ -8,7 +8,9 @@
 // 0.4.0 added drop zones (`droppable="true"`) and where a drop landed, and files: chosen (`<input type=file>`), dropped
 // from outside, pasted, read in slices and offered as downloads — each a browser `File` held here, never copied into
 // the program until a read asks. 0.5.0 added a `<video>` or `<audio>`'s playback — its time, length and pause, a seek,
-// play and pause — and the `Media` event its own events raise, heard in the capture phase as focus is.
+// play and pause — and the `Media` event its own events raise, heard in the capture phase as focus is. 0.6.0 added the
+// `Commit` event (`commit`): the person done with a control's value, after the Changes on the way, measured against
+// what each control was last committed at (`__kamaUiCommitted`, beside the `__kamaUiDirty` of an edit pending).
 //
 // The bodies of kama_ui_web.h. Linked by the `--js-library` this package's `jsLibraries` contributes,
 // which the driver propagates to every consumer of `@kama/ui`.
@@ -146,8 +148,9 @@ mergeInto(LibraryManager.library, {
         },
 
         // What a DOM event is to the seam: 1 a click, 2 a change, 3 a double click, 5 focus, 6 blur, 7 a drop, 11 a
-        // media element's change (0.5.0), 0 nothing (4, a key, comes from `onKey`, not from a binding; 8 a chooser's
-        // answer, 9 a paste of files and 10 a finished read come from the package's own listeners, 0.4.0).
+        // media element's change (0.5.0), 12 a commit (0.6.0), 0 nothing (4, a key, comes from `onKey`, not from a
+        // binding; 8 a chooser's answer, 9 a paste of files and 10 a finished read come from the package's own
+        // listeners, 0.4.0).
         //
         // ⚠️ A DOUBLE CLICK IS THE SECOND PRESS (`mousedown` with `detail` 2), NOT THE BROWSER'S `dblclick`, which
         // arrives after the second click: RmlUi raises its own on the second press, before that click, and the legs
@@ -163,6 +166,12 @@ mergeInto(LibraryManager.library, {
         //     can. Their `change` is a commit (a release, a field losing focus, ENTER), and natively there is none.
         //   - a checkbox, a radio, a `<select>`, anything else: `change`, once per toggle or choice. Their `input`
         //     fires at the same moment, so counting both was the double.
+        // ADDED (0.6.0): that `change` is a COMMIT (12) for a range and any other live control but a text one — a range
+        // let go or stepped by a key — measured before it is raised (`commitOnce`). A text control's is not heard: a
+        // browser fires it on ENTER and on the blur, but whether it does depends on its own record of the value, which
+        // a script's writes move one way in Firefox and another in Chrome. So ENTER (`onKey`) and the blur (`focusout`,
+        // `listen`) are read here, and measured the same way. A checkbox's, a radio's and a select's Commit follows
+        // their Change (`listen`).
         kindOf: function (e) {
             if (!e) return 0;
             if (e.type === 'click') return 1;
@@ -172,9 +181,101 @@ mergeInto(LibraryManager.library, {
             if (e.type === 'drop') return 7;
             if (KamaUi.mediaEvents[e.type]) return KamaUi.media(e.target) ? 11 : 0;
             var t = e.target;
-            var live = !!t && (t.tagName === 'TEXTAREA' ||
-                               (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'radio'));
-            return e.type === (live ? 'input' : 'change') ? 2 : 0;
+            if (!KamaUi.live(t)) return e.type === 'change' ? 2 : 0;
+            if (e.type === 'input') return 2;
+            return (e.type === 'change' && !KamaUi.typesText(t)) ? 12 : 0;
+        },
+
+        // A control whose Change is its `input`: a textarea, an `<input>` but a checkbox or a radio (`kindOf`). (0.6.0)
+        // Each is MEASURED for its Commit (host.kama, `pollEvent`).
+        live: function (t) {
+            return !!t && (t.tagName === 'TEXTAREA' ||
+                           (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'radio'));
+        },
+
+        // A control a person types into (host.kama, `textFocused`): a textarea, and an `<input>` whose `type` ATTRIBUTE
+        // is absent or empty, text, password, number, search, email, url or tel, in any case — read as native.kama
+        // reads it, not as `el.type`, which a browser normalises (an unknown type reads `text` there and not natively).
+        typesText: function (el) {
+            if (!el || el.nodeType !== 1) return false;
+            if (el.tagName === 'TEXTAREA') return true;
+            if (el.tagName !== 'INPUT') return false;
+            var t = (el.getAttribute('type') || 'text').toLowerCase();
+            var typing = { text: 1, password: 1, number: 1, search: 1, email: 1, url: 1, tel: 1 };
+            return !!typing[t];
+        },
+
+        // ---- 0.6.0: commits (host.kama, `pollEvent`) ----
+        //
+        // A Commit is raised when a person is done with a control's value, and only when it changed since that
+        // control's last Commit. For a live control that is MEASURED: `__kamaUiDirty` says an edit is pending (an
+        // `input` heard, `listen`), and `__kamaUiCommitted` holds the value the next Commit is measured against — as
+        // loaded (`measureFrom`), as last committed, or as the program last wrote it with no edit pending (`wrote`).
+        // native.kama keeps the same two on the control as attributes, and the same rules.
+
+        // A control as it was made — loaded, or inserted by a rewrite or an append — is what its first Commit is
+        // measured against. Once: a control seen again keeps its own.
+        measureFrom: function (node) {
+            if (!node || node.nodeType !== 1) return;
+            var list = (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') ? [node] : [];
+            list = list.concat(Array.prototype.slice.call(node.querySelectorAll('input, textarea')));
+            for (var k = 0; k < list.length; k++) {
+                var el = list[k];
+                if (KamaUi.live(el) && !('__kamaUiCommitted' in el)) el.__kamaUiCommitted = String(el.value);
+            }
+        },
+
+        // The program wrote a control's value: with no edit pending, what it wrote is the measure — a value the program
+        // put there is not one the person chose. With one pending, the edit stays pending (a field normalised as it is
+        // typed still commits when it is left).
+        wrote: function (el) {
+            if (!KamaUi.live(el) || el.__kamaUiDirty) return;
+            el.__kamaUiCommitted = String(el.value);
+        },
+
+        // Is a Commit due: an edit pending whose value differs from the last Commit's? Either way the edit is no longer
+        // pending, and when it is due its value becomes the measure. Asked AT the event, so the value is the one there.
+        commitDue: function (el) {
+            if (!el || !el.__kamaUiDirty) return false;
+            el.__kamaUiDirty = false;
+            var v = String(el.value);
+            if (('__kamaUiCommitted' in el) && el.__kamaUiCommitted === v) return false;
+            el.__kamaUiCommitted = v;
+            return true;
+        },
+
+        // The handle of a binding that listens on `n`, or -1 (an element only NAMED, as a target, hears nothing).
+        hearer: function (n) {
+            var i = KamaUi.els.indexOf(n);
+            return (i >= 0 && KamaUi.listeners[i]) ? i : -1;
+        },
+
+        // One Commit for `el` per binding from it up, innermost first, as its Change bubbled — queued at once.
+        commit: function (el) {
+            for (var n = el; n && KamaUi.root && KamaUi.root.contains(n); n = n.parentElement) {
+                var i = KamaUi.hearer(n);
+                if (i >= 0) {
+                    KamaUi.events.push({ kind: 12, handle: i + 1, target: el, current: n, source: null, key: 0, mods: 0,
+                                         files: 0, x: 0, y: 0 });
+                }
+            }
+        },
+
+        // The first listener of one DOM event to ask measures it and queues every binding's Commit; the rest of that
+        // event's listeners find it done. ⚠️ FOR A BLUR THE FIRST IS THE OUTERMOST BINDING (focus is heard in the capture
+        // phase), so its Commits — innermost first — still all come before any Blur, as natively.
+        commitOnce: function (e, el) {
+            if (e.__kamaUiCommit) return;
+            e.__kamaUiCommit = true;
+            if (KamaUi.commitDue(el)) KamaUi.commit(el);
+        },
+
+        // No binding listens above `node`: its listener is the last to hear this event bubble.
+        outermost: function (node) {
+            for (var n = node.parentElement; n && KamaUi.root && KamaUi.root.contains(n); n = n.parentElement) {
+                if (KamaUi.hearer(n) >= 0) return false;
+            }
+            return true;
         },
 
         // Give handle i + 1 a listener and put it on the element, once. ⚠️ NO stopPropagation (kama_ui_web_bind says
@@ -188,6 +289,11 @@ mergeInto(LibraryManager.library, {
                 KamaUi.listeners[i] = function (e) {
                     var kind = KamaUi.kindOf(e);
                     if (!kind) return;
+                    // (0.6.0) A range's `change` (a release, a key's step) is a Commit, for every binding at once; a live
+                    // control's Change leaves an edit pending; a text control's blur commits that edit before any Blur.
+                    if (kind === 12) { KamaUi.commitOnce(e, e.target); return; }
+                    if (kind === 2 && e.type === 'input') e.target.__kamaUiDirty = true;
+                    if (kind === 6 && KamaUi.typesText(e.target)) KamaUi.commitOnce(e, e.target);
                     // (0.5.0) ONE MEDIA EVENT WAITS AT A TIME for this binding and this clip (host.kama): the event says
                     // only that something changed, so a second before the poll would say nothing new — and a seek
                     // alone fires two (`timeupdate`, then `seeked`).
@@ -218,6 +324,9 @@ mergeInto(LibraryManager.library, {
                         }
                     }
                     KamaUi.events.push(rec);
+                    // (0.6.0) A checkbox's, a radio's or a select's edit is its own commit: once its Change has reached
+                    // the last binding to hear it, every binding's Commit follows.
+                    if (kind === 2 && e.type === 'change' && KamaUi.outermost(e.currentTarget)) KamaUi.commit(e.target);
                 };
             }
             KamaUi.attach(i);
@@ -510,6 +619,14 @@ mergeInto(LibraryManager.library, {
             if (!KamaUi.reported(key, mods)) return;
             KamaUi.events.push({ kind: 4, handle: 0, target: document.activeElement, current: null, source: null,
                                  key: key, mods: mods });
+            // (0.6.0) ENTER commits a text field's pending edit, after its Key, whether or not the page prevents the
+            // browser's own (natively RmlUi's field always sees it). Not a textarea's, whose ENTER types a line, and not
+            // the ENTER that ends an input method's composition, which is still typing.
+            var a = document.activeElement;
+            if (key === 257 && !e.isComposing && a && a.tagName === 'INPUT' && KamaUi.typesText(a) &&
+                KamaUi.root && KamaUi.root.contains(a)) {
+                KamaUi.commitOnce(e, a);
+            }
         },
         onPress: function () { if (KamaUi.loaded) KamaUi.dismiss(); },
         onOver: function (e) { KamaUi.hover = e.target; KamaUi.px = e.clientX; KamaUi.py = e.clientY; },
@@ -739,6 +856,7 @@ mergeInto(LibraryManager.library, {
         KamaUi.root.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
         KamaUi.untitle(KamaUi.root);
         KamaUi.typeClasses(KamaUi.root);
+        KamaUi.measureFrom(KamaUi.root);
         KamaUi.tip = null;
         KamaUi.makeTip();
         KamaUi.dragSource = null;
@@ -764,6 +882,8 @@ mergeInto(LibraryManager.library, {
         el.innerHTML = KamaUi.rewrite(UTF8ToString(htmlPtr));
         KamaUi.untitle(el);
         KamaUi.typeClasses(el);
+        KamaUi.measureFrom(el);
+        KamaUi.wrote(el);
     },
 
     kama_ui_web_set_image_rewrite__deps: ['$KamaUi'],
@@ -888,7 +1008,9 @@ mergeInto(LibraryManager.library, {
                 active.value = String(want);
                 // `input`, not `change`: `input` is what a drag emits and what a range's change is counted from
                 // (`kindOf`), so a keyed adjustment reaches the program by the identical path a dragged one does.
+                // (0.6.0) Then `change`, as a browser's own step fires it: the step's Commit (`kindOf`).
                 active.dispatchEvent(new Event('input', { bubbles: true }));
+                active.dispatchEvent(new Event('change', { bubbles: true }));
             }
             return;
         }
@@ -1032,6 +1154,7 @@ mergeInto(LibraryManager.library, {
         var el = KamaUi.el(handle);
         if (!el || !('value' in el)) return;
         el.value = String(value);
+        KamaUi.wrote(el);
     },
 
     kama_ui_web_set_class__deps: ['$KamaUi'],
@@ -1083,11 +1206,7 @@ mergeInto(LibraryManager.library, {
     kama_ui_web_text_focused: function () {
         var el = document.activeElement;
         if (!el || !KamaUi.root || !KamaUi.root.contains(el)) return 0;
-        if (el.tagName === 'TEXTAREA') return 1;
-        if (el.tagName !== 'INPUT') return 0;
-        var t = (el.getAttribute('type') || 'text').toLowerCase();
-        var typing = { text: 1, password: 1, number: 1, search: 1, email: 1, url: 1, tel: 1 };
-        return typing[t] ? 1 : 0;
+        return KamaUi.typesText(el) ? 1 : 0;
     },
 
     // At most capacity - 1 bytes and a NUL, and ALWAYS the full length: src/web.kama asks once with no buffer to learn
@@ -1109,6 +1228,7 @@ mergeInto(LibraryManager.library, {
         var el = KamaUi.el(handle);
         if (!KamaUi.control(el) || !text) return;
         el.value = UTF8ToString(text);
+        KamaUi.wrote(el);
     },
 
     // No document: the overlay empties and every handle dies, as at `kama_ui_web_set_document`.
@@ -1193,6 +1313,7 @@ mergeInto(LibraryManager.library, {
         for (var n = last ? last.nextSibling : el.firstChild; n; n = n.nextSibling) {
             KamaUi.untitle(n);
             KamaUi.typeClasses(n);
+            KamaUi.measureFrom(n);
         }
     },
 
@@ -1215,7 +1336,7 @@ mergeInto(LibraryManager.library, {
         if ((n.toLowerCase() === 'type' || n.toLowerCase() === 'class') && el.tagName === 'INPUT') KamaUi.typeClasses(el);
         if (KamaUi.control(el)) {
             if (n === 'checked') el.checked = true;
-            if (n === 'value') el.value = v;
+            if (n === 'value') { el.value = v; KamaUi.wrote(el); }
         }
     },
 
@@ -1228,7 +1349,7 @@ mergeInto(LibraryManager.library, {
         if (n.toLowerCase() === 'title') el.removeAttribute('data-kama-ui-title');
         if (KamaUi.control(el)) {
             if (n === 'checked') el.checked = false;
-            if (n === 'value') el.value = '';
+            if (n === 'value') { el.value = ''; KamaUi.wrote(el); }
         }
     },
 

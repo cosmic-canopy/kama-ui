@@ -109,7 +109,7 @@ comptime float64 UI_TOOLTIP_DELAY = 0.5;
 
 // What an event is. Elements are INTEGER HANDLES from `bindElement`, never strings: dispatch is an integer compare
 // rather than a string compare. 0.3.0 added every kind from `DoubleClick` to `Drop`, 0.4.0 `Files` to `Read`, 0.5.0
-// `Media`:
+// `Media`, 0.6.0 `Commit`:
 //   Click        a press and release on the element (ENTER on the focused one is one too)
 //   Change       one edit of a control (host.kama, `pollEvent`)
 //   DoubleClick  a second press within half a second, between the two clicks (the second click still follows)
@@ -125,7 +125,11 @@ comptime float64 UI_TOOLTIP_DELAY = 0.5;
 //   Media        a `<video>` or `<audio>` (`target`) loaded its metadata, played, paused, finished a seek, or moved on
 //                while playing: read its state (host.kama, `mediaTime`…). One waits at a time per element and target.
 //                On the web only: natively there is no media element yet
-type enum UiEventKind { None, Click, Change, DoubleClick, Key, Focus, Blur, Drop, Files, Paste, Read, Media }
+//   Commit       the person is done with a control's value (`target`), which changed since its last Commit: a range let
+//                go or stepped by a key, ENTER in a text field, a text field or a textarea losing the focus, and each
+//                toggle or choice of a checkbox, a radio or a select. It carries no value: the last Change did, so read
+//                it (host.kama, `pollEvent`)
+type enum UiEventKind { None, Click, Change, DoubleClick, Key, Focus, Blur, Drop, Files, Paste, Read, Media, Commit }
 
 type value UiEvent {
     public UiEventKind kind;

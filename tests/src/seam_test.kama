@@ -6,13 +6,13 @@
 
 import {
     Tally, check, section, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll,
-    dragBegin, dragEnd, typeInto, pick, fontPath, legTests, pageLegTests,
+    dragBegin, dragEnd, typeInto, pick, fontPath, legTests, pageLegTests, slideRange, pressTrack, eraseIn,
     ui::UiContext, ui::UiEvent, ui::UiEventKind, ui::UiRect,
     ui::UI_KEY_TAB, ui::UI_KEY_ENTER, ui::UI_KEY_DOWN, ui::UI_KEY_UP, ui::UI_KEY_RIGHT, ui::UI_KEY_ESCAPE,
     ui::UI_KEY_F2, ui::UI_KEY_PAGE_DOWN, ui::UI_KEY_S, ui::UI_KEY_1, ui::UI_MOD_SHIFT, ui::UI_MOD_CTRL, ui::UI_MOD_ALT,
     ui::uidoc::escapeText,
 };
-export { seamTests, pageTests, Seen, collect, changesOn, press, centerX, centerY };
+export { seamTests, pageTests, Seen, collect, changesOn, editsOn, press, centerX, centerY };
 
 // What the queue held of what an element did — clicks, changes, double clicks, drops — with the handles, targets,
 // source and modifiers of the first two. Keys, Focus and Blur are left out: they ride along with presses (a click
@@ -154,6 +154,7 @@ fn string kindName(UiEventKind k)
         case Paste: "Paste";
         case Read: "Read";
         case Media: "Media";
+        case Commit: "Commit";
     };
 }
 
@@ -196,6 +197,55 @@ fn string kindsOn(ref UiContext ui, int32 handle)
                 if (!aside && ev.element == handle) {
                     string kind = kindName(k: ev.kind);
                     if (acc.isEmpty()) { acc = copy kind; } else { acc = "${acc},${kind}"; }
+                }
+            }
+        };
+    }
+    return acc;
+}
+
+// (0.6.0) The edits one handle heard, in order — its Changes and Commits, nothing else: "Change,Change,Commit".
+fn string editsOn(ref UiContext ui, int32 handle)
+{
+    string acc = "";
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool edit = match (ev.kind) { case Change: true; case Commit: true; case _: false; };
+                if (edit && ev.element == handle) {
+                    string kind = kindName(k: ev.kind);
+                    if (acc.isEmpty()) { acc = copy kind; } else { acc = "${acc},${kind}"; }
+                }
+            }
+        };
+    }
+    return acc;
+}
+
+// (0.6.0) Every edit the queue held, in order, as `trace` writes it — Changes and Commits, with `focus` the Focus and
+// Blur around them, with `keys` the Keys (a Key's element is 0, so "Key:>field"). Clicks are left out: ENTER on a
+// focused field clicks it on the web (`kama_ui_web_key`), which is the ring's business and not an edit's.
+fn string editTrace(ref UiContext ui, bool focus, bool keys)
+{
+    string acc = "";
+    bool more = true;
+    while (more) {
+        Optional<UiEvent> e = ui.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                bool edit = match (ev.kind) { case Change: true; case Commit: true; case _: false; };
+                bool moved = match (ev.kind) { case Focus: true; case Blur: true; case _: false; };
+                bool key = match (ev.kind) { case Key: true; case _: false; };
+                if (edit || (focus && moved) || (keys && key)) {
+                    string kind = kindName(k: ev.kind);
+                    string element = ui.elementId(handle: ev.element);
+                    string target = ui.elementId(handle: ev.target);
+                    string one = "${kind}:${element}>${target}";
+                    if (acc.isEmpty()) { acc = copy one; } else { acc = "${acc},${one}"; }
                 }
             }
         };
@@ -577,7 +627,7 @@ fn void seamTests(ref Tally t)
     int32 chose = changesOn(ui: ui, handle: choices);
     check(t: t, ok: chose == 1, what: "a radio chosen: one, though RmlUi unchecks its neighbour too (${chose})");
     check(t: t, ok: ui.elementChecked(handle: choiceB), what: "...and it is checked");
-    pick(ui: ui, selectId: "pick", optionId: "pick-b");
+    pick(ui: ui, selectId: "pick", optionId: "pick-b", index: 1);
     int32 picked = changesOn(ui: ui, handle: picker);
     string pickedValue = ui.elementText(handle: picker);
     check(t: t, ok: picked == 1 && pickedValue == "b", what: "an option picked: one ('${pickedValue}', ${picked})");
@@ -586,6 +636,133 @@ fn void seamTests(ref Tally t)
     int32 committed = changesOn(ui: ui, handle: field);
     check(t: t, ok: committed == 0, what: "ENTER in a text field is a commit, not an edit: none (${committed})");
     ui.setElementText(handle: field, text: "");
+
+    section(what: "the seam: a Commit when a person is done with a value, after its Changes (0.6.0)");
+    // A range: each key's step its own commit; a drag, or a press on the track, committed as it is let go.
+    ui.setElementValue(handle: level, value: 0.5);
+    ui.update();
+    check(t: t, ok: ui.focusElement(handle: level), what: "the range takes the ring");
+    collect(ui: ui);
+    press(ui: ui, key: UI_KEY_RIGHT);
+    string keyStep = editsOn(ui: ui, handle: level);
+    check(t: t, ok: keyStep == "Change,Commit", what: "a key's step: its Change, then a Commit ('${keyStep}')");
+    press(ui: ui, key: UI_KEY_RIGHT);
+    press(ui: ui, key: UI_KEY_RIGHT);
+    string twoSteps = editsOn(ui: ui, handle: level);
+    check(t: t, ok: twoSteps == "Change,Commit,Change,Commit",
+          what: "two steps before one poll: each its Change and its Commit, in order ('${twoSteps}')");
+    ui.setElementValue(handle: level, value: 1.0);
+    ui.update();
+    press(ui: ui, key: UI_KEY_RIGHT);
+    string beyond = editsOn(ui: ui, handle: level);
+    check(t: t, ok: beyond == "", what: "a step past the end, where the program set it: neither ('${beyond}')");
+    ui.setElementValue(handle: level, value: 0.5);
+    ui.update();
+    collect(ui: ui);
+    check(t: t, ok: slideRange(ui: ui, id: "level", by: 0.05, steps: 2, back: false), what: "the bar is dragged two steps down");
+    string slid = editsOn(ui: ui, handle: level);
+    check(t: t, ok: slid == "Change,Change,Commit",
+          what: "...two Changes, live, then one Commit as it is let go ('${slid}')");
+    slideRange(ui: ui, id: "level", by: 0.05, steps: 2, back: true);
+    string returned = editsOn(ui: ui, handle: level);
+    check(t: t, ok: returned == "Change,Change,Change,Change",
+          what: "dragged two steps down and back, let go where it began: four Changes, no Commit ('${returned}')");
+    pressTrack(ui: ui, id: "level", by: 0.05, steps: 3);
+    string jumped = editsOn(ui: ui, handle: level);
+    check(t: t, ok: jumped == "Change,Commit", what: "a press on the track: the jump's Change, then a Commit as it is let go ('${jumped}')");
+    pressTrack(ui: ui, id: "level", by: 0.05, steps: 0);
+    string onBar = editsOn(ui: ui, handle: level);
+    check(t: t, ok: onBar == "", what: "a press on the bar, let go where it began: neither ('${onBar}')");
+    float32 landed = ui.elementValue(handle: level);
+    check(t: t, ok: landed > 0.549 && landed < 0.551,
+          what: "...and the value is the last Change's: 0.5, down two, down and back, up three is 0.55 (${landed})");
+    press(ui: ui, key: UI_KEY_RIGHT);
+    slideRange(ui: ui, id: "level", by: 0.05, steps: 1, back: false);
+    string mixed = editsOn(ui: ui, handle: level);
+    check(t: t, ok: mixed == "Change,Commit,Change,Commit",
+          what: "a key's step and a drag before one poll: each committed where it ended ('${mixed}')");
+
+    // A text field: committed as it is left, and at ENTER, after an edit — the Commit before the Blur, after the Key.
+    check(t: t, ok: ui.focusElement(handle: field), what: "the text field takes the ring");
+    collect(ui: ui);
+    typeInto(ui: ui, id: "field", text: "ab");
+    check(t: t, ok: ui.focusElement(handle: second), what: "...two characters are typed, and the ring moves on");
+    string leftField = editTrace(ui: ui, focus: true, keys: false);
+    check(t: t, ok: leftField == "Change:field>field,Change:panel>field,Change:field>field,Change:panel>field,Commit:field>field,Commit:panel>field,Blur:panel>field,Blur:field>field,Focus:panel>second,Focus:second>second",
+          what: "...each Change heard by the field then the panel, then their Commits, then the Blur ('${leftField}')");
+    check(t: t, ok: ui.focusElement(handle: field), what: "the field takes the ring again");
+    collect(ui: ui);
+    typeInto(ui: ui, id: "field", text: "c");
+    press(ui: ui, key: UI_KEY_ENTER);
+    string enterTrace = editTrace(ui: ui, focus: false, keys: true);
+    check(t: t, ok: enterTrace == "Change:field>field,Change:panel>field,Key:>field,Commit:field>field,Commit:panel>field",
+          what: "a character then ENTER: its Changes, the Key, then the Commits ('${enterTrace}')");
+    press(ui: ui, key: UI_KEY_ENTER);
+    string again = editsOn(ui: ui, handle: field);
+    check(t: t, ok: again == "", what: "ENTER again with nothing typed since: no Commit ('${again}')");
+    ui.focusElement(handle: second);
+    string leftUnedited = editsOn(ui: ui, handle: field);
+    check(t: t, ok: leftUnedited == "", what: "...nor leaving it ('${leftUnedited}')");
+    ui.focusElement(handle: field);
+    collect(ui: ui);
+    typeInto(ui: ui, id: "field", text: "d");
+    eraseIn(ui: ui, id: "field");
+    ui.focusElement(handle: second);
+    string erased = editsOn(ui: ui, handle: field);
+    check(t: t, ok: erased == "Change,Change", what: "a character typed and erased, then left: its two Changes, no Commit ('${erased}')");
+    // The program's writes: none of either kind, and the measure of the next Commit unless an edit is pending.
+    ui.focusElement(handle: field);
+    collect(ui: ui);
+    ui.setElementText(handle: field, text: "the program's");
+    ui.focusElement(handle: second);
+    string written = editsOn(ui: ui, handle: field);
+    check(t: t, ok: written == "", what: "the program writes the focused field, then the ring moves on: neither ('${written}')");
+    ui.focusElement(handle: field);
+    collect(ui: ui);
+    typeInto(ui: ui, id: "field", text: "!");
+    ui.setElementText(handle: field, text: "THE PROGRAM'S!");
+    ui.focusElement(handle: second);
+    string normalised = editsOn(ui: ui, handle: field);
+    string kept = ui.elementText(handle: field);
+    check(t: t, ok: normalised == "Change,Commit" && kept == "THE PROGRAM'S!",
+          what: "a character the program rewrites at once is still committed as the field is left ('${normalised}', '${kept}')");
+    ui.setElementText(handle: field, text: "");
+
+    // A textarea: committed as it is left; its ENTER types (here nothing: the key alone types no character).
+    check(t: t, ok: ui.focusElement(handle: notes), what: "the textarea takes the ring");
+    collect(ui: ui);
+    typeInto(ui: ui, id: "notes", text: "z");
+    press(ui: ui, key: UI_KEY_ENTER);
+    string inArea = editsOn(ui: ui, handle: notes);
+    check(t: t, ok: inArea == "Change", what: "a character then ENTER in a textarea: its Change, no Commit ('${inArea}')");
+    ui.focusElement(handle: second);
+    string leftArea = editTrace(ui: ui, focus: true, keys: false);
+    check(t: t, ok: leftArea == "Commit:notes>notes,Blur:notes>notes,Focus:panel>second,Focus:second>second",
+          what: "...and as it is left, the Commit, then the Blur ('${leftArea}')");
+
+    // A checkbox, a radio, a select: each edit its own commit, after its Change.
+    UiRect agreeAt = ui.elementRect(handle: agree);
+    collect(ui: ui);
+    injectClick(ui: ui, x: centerX(r: agreeAt), y: centerY(r: agreeAt));
+    string boxed = editsOn(ui: ui, handle: agree);
+    check(t: t, ok: boxed == "Change,Commit", what: "a checkbox toggled: its Change, then a Commit ('${boxed}')");
+    int32 choiceA = ui.bindElement(elementId: "choice-a");
+    UiRect aAt = ui.elementRect(handle: choiceA);
+    UiRect bAt = ui.elementRect(handle: choiceB);
+    collect(ui: ui);
+    injectClick(ui: ui, x: centerX(r: aAt), y: centerY(r: aAt));
+    string choseA = editTrace(ui: ui, focus: false, keys: false);
+    check(t: t, ok: choseA == "Change:choice-a>choice-a,Change:choices>choice-a,Commit:choice-a>choice-a,Commit:choices>choice-a",
+          what: "a radio chosen, itself and its container bound: both Changes, then both Commits; the radio it unchecks, neither ('${choseA}')");
+    injectClick(ui: ui, x: centerX(r: bAt), y: centerY(r: bAt));
+    injectClick(ui: ui, x: centerX(r: aAt), y: centerY(r: aAt));
+    string choseBoth = editTrace(ui: ui, focus: false, keys: false);
+    check(t: t, ok: choseBoth == "Change:choices>choice-b,Commit:choices>choice-b,Change:choice-a>choice-a,Change:choices>choice-a,Commit:choice-a>choice-a,Commit:choices>choice-a",
+          what: "two radios chosen before one poll: each choice's Changes, then its Commits ('${choseBoth}')");
+    collect(ui: ui);
+    pick(ui: ui, selectId: "pick", optionId: "pick-a", index: 0);
+    string chosen = editsOn(ui: ui, handle: picker);
+    check(t: t, ok: chosen == "Change,Commit", what: "an option picked: its Change, then a Commit ('${chosen}')");
 
     section(what: "the seam: keys reach the document");
     ui.claimKey(key: UI_KEY_S, mods: UI_MOD_CTRL);

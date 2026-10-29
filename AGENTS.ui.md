@@ -44,6 +44,13 @@ the contract. These are the working rules.
   drained. RmlUi sends Focus and Blur to every element of the focus chain and focuses whatever is pressed, so only
   `focusable` elements report them. Bindings hear them in the capture
   phase, and so do the web's: that is why both legs deliver them ancestors first.
+- **A `Commit` (0.6.0) is made by the package on both legs**, never taken from a toolkit's event as is. Natively
+  RmlUi has none: `pollEvent` makes it from the root's own `mousedown`/`mouseup`/`keydown`/`blur` and from the Changes,
+  delivers it to every listening binding from the control up (`nextCommit`), and reads one record ahead (`bubbles`,
+  held in `ahead`) to know a Change's bubbling has ended, since a Change's Commit follows all of it. What it is measured
+  against lives on the control as quiet `data-kama-ui-committed`/`-edited` attributes; the web keeps the same two as
+  expandos. Each Change is judged once, at its first record (`changeDropped`), because judging it changes the marks.
+  Compare Commits across the legs as one string (`editsOn`, `editTrace`), as the other events are.
 - **On the web every entry point resolves a handle through `KamaUi.el(handle)`**, never `els[h - 1]`. It re-finds a
   released element by its id (what @kama/rmlui's bindings do natively), which is what keeps a stale handle a no-op.
   A binding's listeners go on and come off through `KamaUi.heard` and `heardCapture`, one list per phase, so a

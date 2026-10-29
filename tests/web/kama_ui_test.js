@@ -82,15 +82,27 @@ mergeInto(LibraryManager.library, {
                 b.left === 0 && b.top === 0 && b.width === de.clientWidth && b.height === de.clientHeight) ? 1 : 0;
     },
 
+    // CHANGED (0.6.0): the field takes the focus first, as a person's click or TAB gives it, and typing fires no
+    // `change`: a browser fires that only when the field is let go (ENTER, or the focus leaving it), which a test does
+    // by those means.
     kama_ui_test_type: function (idPtr, textPtr) {
         var el = document.getElementById(UTF8ToString(idPtr));
         if (!el) return 0;
+        if (document.activeElement !== el && typeof el.focus === 'function') el.focus();
         var chars = Array.from(UTF8ToString(textPtr));
         for (var i = 0; i < chars.length; i++) {
             el.value += chars[i];
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return 1;
+    },
+
+    // (0.6.0) Backspace at the end of a field: the last character gone, and the `input` a browser fires for it.
+    kama_ui_test_backspace: function (idPtr) {
+        var el = document.getElementById(UTF8ToString(idPtr));
+        if (!el || !el.value) return 0;
+        el.value = el.value.slice(0, -1);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
         return 1;
     },
 
@@ -104,14 +116,46 @@ mergeInto(LibraryManager.library, {
         return 1;
     },
 
-    kama_ui_test_drag: function (idPtr, steps) {
+    // CHANGED (0.6.0): a drag of a range's thumb as a browser reports the whole of it — the press (and its focus), an
+    // `input` per step down (and with `back` as many up again), the release, its `change` and the click. ⚠️ The
+    // `change` is fired even when the drag ended where it began, which a browser would not: the package measures that
+    // itself, and this proves it does.
+    kama_ui_test_drag__deps: ['$KamaUiTest'],
+    kama_ui_test_drag: function (idPtr, steps, back) {
         var el = document.getElementById(UTF8ToString(idPtr));
         if (!el) return 0;
+        var init = { bubbles: true, cancelable: true, view: window, button: 0, detail: 1 };
+        if (el.dispatchEvent(new MouseEvent('mousedown', init))) KamaUiTest.focusOnPress(el);
         for (var i = 0; i < steps; i++) {
             el.stepDown();
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
+        for (var j = 0; back && j < steps; j++) {
+            el.stepUp();
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        el.dispatchEvent(new MouseEvent('mouseup', init));
         el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('click', init));
+        return 1;
+    },
+
+    // (0.6.0) A press on a range's track `steps` steps up from its thumb (0: on the thumb), let go where it was
+    // pressed: the press (and its focus), the jump and its `input`, the release, its `change` (fired whether or not
+    // the value moved, as `kama_ui_test_drag` says) and the click.
+    kama_ui_test_track__deps: ['$KamaUiTest'],
+    kama_ui_test_track: function (idPtr, steps) {
+        var el = document.getElementById(UTF8ToString(idPtr));
+        if (!el) return 0;
+        var init = { bubbles: true, cancelable: true, view: window, button: 0, detail: 1 };
+        if (el.dispatchEvent(new MouseEvent('mousedown', init))) KamaUiTest.focusOnPress(el);
+        if (steps > 0) {
+            el.stepUp(steps);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        el.dispatchEvent(new MouseEvent('mouseup', init));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('click', init));
         return 1;
     },
 

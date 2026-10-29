@@ -4,7 +4,7 @@ file @compileFor(!ARCH_WASM32);
 // focus rule, the clipboard the program bridges, and a page sized by `setSize`.
 
 import {
-    Tally, check, section, Seen, collect, press,
+    Tally, check, section, Seen, collect, press, editsOn,
     core::println, core::envOr,
     ui::UiContext, ui::UiCommand, ui::UiCommandKind, ui::UiTexture, ui::UiRect, ui::uiFileType,
     ui::UI_KEY_DOWN, ui::UI_KEY_BACKSPACE, ui::UI_KEY_HOME, ui::UI_KEY_DELETE, ui::UI_KEY_A, ui::UI_KEY_C,
@@ -15,7 +15,7 @@ import {
 };
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
-    typeInto, pick, legTests, pageLegTests, report,
+    typeInto, pick, legTests, pageLegTests, report, slideRange, pressTrack, eraseIn,
     dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks, playsMedia,
 };
 
@@ -124,16 +124,77 @@ fn void typeInto(ref UiContext ui, const ref string id, const ref string text)
     ui.update();
 }
 
-// Choosing as a person does: a click opens the select, a second lands on the option in the box it opened.
-fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId)
+// (0.6.0) Backspace, as a person presses it in the focused field (it is focused already: a test typed into it).
+fn void eraseIn(ref UiContext ui, const ref string id) { press(ui: ui, key: UI_KEY_BACKSPACE); }
+
+// (0.6.0) Where a range of 0 to 1 (the fixture's) has its bar's middle, at its value now: RmlUi's slider puts a bar of
+// the fixture's 12dp across the rest of the track.
+fn float32 barX(ref UiContext ui, int32 h)
+{
+    UiRect r = ui.elementRect(handle: h);
+    return r.x + 6.0 + ui.elementValue(handle: h) * (r.width - 12.0);
+}
+
+// (0.6.0) A person's drag of a range's bar, by RmlUi's own pointer: pressed at the bar's middle, moved `steps` steps of
+// `by` (a step as a fraction of the range) down, one step a move — and with `back` as many up again — each laid out,
+// then let go.
+fn bool slideRange(ref UiContext ui, const ref string id, float32 by, int32 steps, bool back)
+{
+    int32 h = ui.findElement(elementId: id);
+    if (h == 0) { return false; }
+    UiRect r = ui.elementRect(handle: h);
+    float32 x = barX(ui: ui, h: h);
+    float32 y = r.y + r.height * 0.5;
+    float32 step = by * (r.width - 12.0);
+    apart(ui: ui);
+    ui.mouseMove(x: x, y: y);
+    ui.update();
+    ui.mouseButton(button: 0, down: true, mods: 0);
+    ui.update();
+    int32 i = 1;
+    while (i <= steps) {
+        ui.mouseMove(x: x - step * cast<float32>(i), y: y);
+        ui.update();
+        i = i + 1;
+    }
+    if (back) {
+        i = steps - 1;
+        while (i >= 0) {
+            ui.mouseMove(x: x - step * cast<float32>(i), y: y);
+            ui.update();
+            i = i - 1;
+        }
+    }
+    ui.mouseButton(button: 0, down: false, mods: 0);
+    ui.update();
+    return true;
+}
+
+// (0.6.0) A press on a range's track `steps` steps of `by` up from its bar (0: on the bar itself), let go where it was
+// pressed: RmlUi's slider jumps there as it is pressed.
+fn bool pressTrack(ref UiContext ui, const ref string id, float32 by, int32 steps)
+{
+    int32 h = ui.findElement(elementId: id);
+    if (h == 0) { return false; }
+    UiRect r = ui.elementRect(handle: h);
+    float32 x = barX(ui: ui, h: h) + by * (r.width - 12.0) * cast<float32>(steps);
+    return injectClick(ui: ui, x: x, y: r.y + r.height * 0.5);
+}
+
+// Choosing as a person does: a click opens the select, a second lands on the option in the box it opened — the
+// `index`th (from 0) of the fixture's 20dp options, in the box laid out (by a render) below the select; `optionId` is
+// the web's, which selects it by id. CHANGED
+// (0.6.0): by its place, not its id: RmlUi keeps a select's options out of the DOM, so `findElement` finds none (0), and
+// the click aimed at its empty rect landed on the last option of a box not laid out yet — whichever option was asked.
+fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId, int32 index)
 {
     int32 s = ui.findElement(elementId: selectId);
     UiRect sr = ui.elementRect(handle: s);
     injectClick(ui: ui, x: sr.x + sr.width * 0.5, y: sr.y + sr.height * 0.5);
     ui.update();
-    int32 o = ui.findElement(elementId: optionId);
-    UiRect optionBox = ui.elementRect(handle: o);
-    injectClick(ui: ui, x: optionBox.x + optionBox.width * 0.5, y: optionBox.y + optionBox.height * 0.5);
+    ui.render();
+    float32 y = sr.y + sr.height + 20.0 * cast<float32>(index) + 10.0;
+    injectClick(ui: ui, x: sr.x + sr.width * 0.5, y: y);
 }
 
 fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
@@ -184,6 +245,30 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     check(t: t, ok: v2 == "0.0.0.7:27015", what: "Home then Delete edits at the caret ('${v2}')");
     Seen typing = collect(ui: ui);
     check(t: t, ok: typing.changes >= 1, what: "a person's typing raises change events (${typing.changes})");
+
+    section(what: "native: a range let go off its track still commits (0.6.0)");
+    int32 level = ui.findElement(elementId: "level");
+    ui.setElementValue(handle: level, value: 0.5);
+    ui.update();
+    collect(ui: ui);
+    UiRect lr = ui.elementRect(handle: level);
+    float32 bx = barX(ui: ui, h: level);
+    float32 by = lr.y + lr.height * 0.5;
+    apart(ui: ui);
+    ui.mouseMove(x: bx, y: by);
+    ui.update();
+    ui.mouseButton(button: 0, down: true, mods: 0);
+    ui.update();
+    ui.mouseMove(x: bx - 0.05 * (lr.width - 12.0), y: by);
+    ui.update();
+    ui.mouseMove(x: bx - 0.05 * (lr.width - 12.0), y: by + 200.0);
+    ui.update();
+    ui.mouseButton(button: 0, down: false, mods: 0);
+    ui.update();
+    string offTrack = editsOn(ui: ui, handle: level);
+    float32 offValue = ui.elementValue(handle: level);
+    check(t: t, ok: offTrack == "Change,Commit" && offValue > 0.449 && offValue < 0.451,
+          what: "its bar dragged a step, the pointer moved off it and let go there: a Change, then a Commit ('${offTrack}', ${offValue})");
 
     section(what: "native: a navigation key with nothing focused lands on the first control");
     ui.focusDocument();

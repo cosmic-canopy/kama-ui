@@ -11,9 +11,9 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: published** (registry.kama-lang.org, 0.5.2 on 2026-10-29). Needs **kama ≥ 0.9.758**;
-> tested with 0.9.758. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in headless Firefox 157
-> (emcc 6.0.9).
+> **Status: 0.6.0, not yet published** (0.5.2 is on registry.kama-lang.org, 2026-10-29): the `Commit` event. Needs
+> **kama ≥ 0.9.758**; tested with 0.9.765. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in
+> headless Firefox 157 (emcc 6.0.9).
 
 **The plan.** RmlUi is today's native engine. Matt's own HTML/CSS engine replaces `@kama/rmlui` later, behind this
 same contract. Only `native.kama` changes. The documents, the web leg and every program using `UiContext` stay as they
@@ -22,7 +22,7 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 - documents from a file and from text, on a scaled stage or as a page that fills the window;
 - bindings by id that survive rewrites, and let go of what a rewrite replaced;
 - markup appended and children removed in place;
-- events, polled, each naming where it happened: clicks, changes, double clicks, keys, focus and blur, drops;
+- events, polled, each naming where it happened: clicks, changes, commits, double clicks, keys, focus and blur, drops;
 - a focus ring driven by TAB, the arrows and ENTER;
 - tooltips from `title`, and drag and drop from `draggable`, onto zones marked `droppable`, saying where it landed;
 - files into and out of the page: chosen, dropped from outside, pasted, read in slices, offered to save;
@@ -49,7 +49,7 @@ are. What a replacement must provide is exactly `UiHost` in `src/host.kama`:
 | media (web; None / false natively) | `mediaTime(h)` / `mediaDuration(h)` → `Optional<float64>` seconds, `mediaPaused(h)` → `Optional<bool>`, `seekMedia(h, seconds)`, `playMedia(h)`, `pauseMedia(h)` → bool (asked) |
 | files (native, the program's half) | `takeFileRequest()`, `fileRequestAccept` / `fileRequestMultiple`, `provideFiles(files, paths)`, `dropFiles(paths, x, y)`, `pasteFiles(paths)`, `takeSaveRequest()`, `saveRequestName`, `saveRequestBytes` (0 and no-ops on the web) |
 | elements | `bindElement(id)` → handle, `findElement(id)` → a handle that hears nothing, `elementId(h)` → its id, `elementRect`, `elementValue` / `setElementValue` (a float), `elementText` / `setElementText` (no length cap), `elementChecked(h)`, `setElementClass`, `setElementProperty`, `setElementAttribute(h, name, value)` / `removeElementAttribute(h, name)`, `elementContent(h)` / `setElementContent(h, text)` (plain text), `scrollToEnd(h)`, `isScrolledToEnd(h)`, `scrollIntoView(h)` |
-| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop \| Files \| Paste \| Read \| Media, element, target, source, key, mods, files, atX, atY }` |
+| events | `pollEvent()` → `UiEvent { kind: Click \| Change \| DoubleClick \| Key \| Focus \| Blur \| Drop \| Files \| Paste \| Read \| Media \| Commit, element, target, source, key, mods, files, atX, atY }` |
 | lifetime | `UiContext.open(width, height, fontPath)` (a stage), `UiContext.openPage(width, height, fontPath)` (a page), `isOpen()`, `close()` |
 
 `ui::UiNav` turns a pad's d-pad and stick into arrow presses (hysteresis, one direction at a time, delay then repeat).
@@ -78,10 +78,18 @@ The rules that matter most:
   whether an element is there.
 - **One change per edit, the same count on both legs**: each character typed into a text field or a textarea, each
   step of a range (live, as a slider previews), each toggle of a checkbox, each choice of a radio or an option. A
-  commit is no edit: ENTER in a text field, a field losing focus, a slider let go, and the radio a choice unchecks.
-  Neither is a movement that changes nothing: a range stepped past its end, or dragged within one step.
-- **Writes into controls raise no event on either leg**, attributes included (`checked`, `value`). Only a person's
-  edit is queued.
+  commit is no edit: ENTER in a text field, a field losing focus, a slider let go. Neither is the radio a choice
+  unchecks, nor a movement that changes nothing: a range stepped past its end, or dragged within one step.
+- **A `Commit` when the person is done with a value** (0.6.0), after the Changes on the way, for a program that wants
+  only the value settled on (a field saved as it is left, one undo step per drag). It names the control as its
+  `target`, reaches the same bindings in the same order, and carries no value: read it, as the last Change left it.
+  A range commits as it is let go (a drag of its bar, a press on its track) and at each step of a key; a text field at
+  ENTER and as it loses the focus (before that Blur); a textarea as it loses the focus; a checkbox, a radio and a
+  select with each Change. Only when the value changed since the control's last Commit: a drag back to where it
+  began, or a character typed and erased, then left, is none. A program's write is what the next Commit is measured
+  against, unless the person has an edit pending, which then still commits.
+- **Writes into controls raise no event on either leg**, attributes included (`checked`, `value`), neither a Change
+  nor a Commit. Only a person's edit is queued.
 - **`scrollToEnd` follows a log**: write the new line, ask in the same frame, and the next frame drawn shows the end
   on both legs. The web scrolls at once; natively the request waits for the next `update`, whose layout pass measures
   what was written. To follow only while the reader is at the bottom (scrolling up to read is not yanked back), ask
@@ -359,6 +367,16 @@ The two scripts build one program, `tests/`. Shared on both legs:
   - **one change per edit, counted per control**: three characters typed into a text field, two into a textarea, a
     range step, a range step past its end (none), a checkbox toggle, a radio choice (one, though RmlUi also unchecks
     the neighbour), an option picked, and ENTER in a text field (none);
+  - **a commit when a person is done with a value** (0.6.0), each as the Changes and Commits one handle heard, or one
+    string per leg: a range's key step (Change, Commit), two before one poll, one past the end (neither), its bar
+    dragged two steps and let go (two Changes, a Commit), dragged down and back (four Changes, none), a press on its
+    track (Change, Commit) and on its bar (neither), and a key step with a drag before one poll; a text field typed in
+    and left (its Changes, the field's then the panel's Commit, then the Blurs), typed in and ENTER (the Changes, the
+    Key, the Commits), ENTER again and leaving it unedited (none), a character typed and erased then left (none), the
+    program's write then leaving (none) and its write over a pending edit (still committed); a textarea's ENTER (no
+    commit) and its blur (the Commit, then the Blur); a checkbox (Change, Commit); a radio bound inside a bound
+    container (both Changes, then both Commits, the unchecked radio neither), two radios before one poll, and an
+    option picked;
   - attributes: `hidden` against the document's `[hidden]` rule, `checked` set and removed quietly, a person's click toggling
     it, a write after that still taking, and a `value` attribute written quietly;
   - a 3,400-byte value with three-byte characters read back whole;
@@ -409,10 +427,13 @@ The two scripts build one program, `tests/`. Shared on both legs:
 On the native leg the input is RmlUi's own: the pointer, the buttons (a click half a second of the clock apart from the
 last, so it never pairs into a double click), the wheel and keys. On the web it is the browser's own hit test
 (`document.elementFromPoint`) and the events a browser fires, in its order. A synthetic event performs no default
-action, so the helpers perform the ones that matter: a press focuses what it hits; typing sends an `input` per
-character and the `change` of letting go; an option is selected, then `input` and `change`; a drag is mousedown,
-dragstart, dragenter, dragover, drop, dragend; a key is a keydown at the focused element, then the same key forwarded to
-`key`. Each leg adds its own checks:
+action, so the helpers perform the ones that matter: a press focuses what it hits; typing focuses the field and sends
+an `input` per character (a `change` only as a browser does, when the field is let go); an option is selected, then
+`input` and `change`; a drag is mousedown, dragstart, dragenter, dragover, drop, dragend; a range's thumb dragged is
+the press, an `input` per step, the release with its `change`, and the click (a press on its track the same, with one
+`input` for the jump); a key is a keydown at the focused element, then the same key forwarded to `key`. Natively a
+range is dragged by RmlUi's pointer at its bar, and an option is chosen by a click in the box laid out below its
+select. Each leg adds its own checks:
 
 - **Natively**: draws with vertices and a glyph-atlas texture, the provided picture at its own size, typing with
   Backspace, Home and Delete, change events from typing, "a navigation key with nothing focused lands on the first
@@ -421,7 +442,7 @@ dragstart, dragenter, dragover, drop, dragend; a key is a keydown at the focused
   name.
   The wheel is RmlUi's own input, with a second of updates for its smooth scroll.
 - **On the web**: a claimed Ctrl+S prevented (and Cmd+S folded into it) while Ctrl+P is not, `copyText` reaching
-  `navigator.clipboard`, a title held as `data-kama-ui-title`, a text selection surviving an append, a slider dragged two steps and let go giving two changes, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
+  `navigator.clipboard`, a title held as `data-kama-ui-title`, a text selection surviving an append, a slider dragged two steps and let go giving two changes and a commit, no commands and no textures, the image rewrite done before the browser fetched (and on an `src`
   attribute), real elements, a row a rewrite released and a field from a closed
   document hearing nothing (click, input and change fired at the detached element), and a page's stage pinned to the
   window, filling it, hidden and shown again by `setViewport` without moving. The wheel is the browser's own scroll,

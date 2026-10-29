@@ -16,7 +16,10 @@ file @compileFor(!ARCH_WASM32);
 //   - (0.4.0) the files (host.kama): every list, read and save request the program provided or asked for, and the
 //     events they raise, in a `FileStore` on the heap behind the context's `store` pointer — the one piece of state
 //     here that is not RmlUi's — made when the UI starts and dropped at `close`;
-//   - (0.5.0) media playback answers None and false: RmlUi has no media element (host.kama, "media").
+//   - (0.5.0) media playback answers None and false: RmlUi has no media element (host.kama, "media");
+//   - (0.6.0) a `Commit` when a person is done with a control's value (host.kama, `pollEvent`), which RmlUi has no
+//     event for: made here, at the poll, from the root's own presses, releases, keys and blurs and from the Changes the
+//     bindings hear, with what each control was last committed at kept on the control itself (quiet attributes).
 //
 // ⚠️ ONE GATE, ON THE FILE. A package build compiles every source under its root regardless of imports, so this file
 // would reach the wasm leg too; the whole-unit gate (kama 0.9.150) keeps it — and its import of @kama/rmlui — out. The
@@ -551,6 +554,141 @@ unsafe fn bool focusable(Element el)
     return match (rcss) { case None: false; case Some(value: s): s == "auto"; };
 }
 
+// ---- 0.6.0: commits (host.kama, `pollEvent`) ----
+//
+// RmlUi raises nothing when a person is done with a value, so a Commit is made here, at the poll, in the order the queue
+// holds what caused it: a range's release (the root's `mouseup`, else its `dragend`) or a key's step (its Change), a text
+// field's ENTER (the root's `keydown`) or a text control's blur (the root's `blur`, in the capture phase so it is read
+// before any binding's Blur), and every other control's Change. Each is delivered to every binding from the control up
+// (`nextCommit`), as a Change bubbles to them.
+//
+// ⚠️ WHAT A COMMIT IS MEASURED AGAINST LIVES ON THE CONTROL, as two quiet attributes — the context is a `value` and owns
+// nothing; the scroll marks set the pattern. `data-kama-ui-committed` is the value the next Commit is measured against:
+// as loaded (`measureFrom`, from `dress`), as last committed, or as the program last wrote it with no edit pending
+// (`wrote`). `data-kama-ui-edited` is there only while an edit is pending, and holds the value THE LAST CHANGE POLLED
+// CARRIED, not the control's value now: the queue is read after the input that filled it, so by the poll the control may
+// have moved on, and a release and a key's step in one frame must still be two Commits, measured where each happened.
+
+// A range: committed when let go and at each step of a key.
+unsafe fn bool isRange(Element el) { return el.tag() == "input" && inputClass(el: el) == "range"; }
+
+// A text control — a textarea, or an `<input>` RmlUi makes a text field (`inputClass` `text` or `password`): committed
+// at its blur, and a field at ENTER. ⚠️ RmlUi's classes, not `textFocused`'s list: a type RmlUi types into here (`date`)
+// is committed as a field is, since it behaves as one natively.
+unsafe fn bool liveText(Element el)
+{
+    string tag = el.tag();
+    if (tag == "textarea") { return true; }
+    if (tag != "input") { return false; }
+    string cls = inputClass(el: el);
+    return cls == "text" || cls == "password";
+}
+
+// What a Commit is MEASURED for, its value against the last Commit's: a range and a text control. A checkbox, a radio and
+// a select commit with every Change instead.
+unsafe fn bool measured(Element el) { return isRange(el: el) || liveText(el: el); }
+
+// The nearest range at or above `el` (a press lands on its track, its bar or an arrow, children RmlUi gives it), else a
+// dead element.
+unsafe fn Element rangeOf(Element el)
+{
+    Element at = el;
+    while (at.isLive()) {
+        if (isRange(el: at)) { return at; }
+        Optional<Element> up = at.parent();
+        match (up) { case None: { return Element.fromHandle(handle: 0); } case Some(value: p): { at = p; } };
+    }
+    return Element.fromHandle(handle: 0);
+}
+
+// The text FIELD at or above `el` — a single line, which ENTER commits — else a dead element (a textarea's ENTER types).
+unsafe fn Element fieldOf(Element el)
+{
+    Element at = el;
+    while (at.isLive()) {
+        string tag = at.tag();
+        if (tag == "textarea") { return Element.fromHandle(handle: 0); }
+        if (tag == "input") {
+            if (liveText(el: at)) { return at; }
+            return Element.fromHandle(handle: 0);
+        }
+        Optional<Element> up = at.parent();
+        match (up) { case None: { return Element.fromHandle(handle: 0); } case Some(value: p): { at = p; } };
+    }
+    return Element.fromHandle(handle: 0);
+}
+
+// No record: what `ahead` is while nothing is read ahead.
+fn Event noEvent()
+{
+    return Event.make(listener: Listener.fromHandle(handle: 0), binding: Binding.fromHandle(handle: 0),
+                      type: EventType::Other, element: Element.fromHandle(handle: 0), target: Element.fromHandle(handle: 0));
+}
+
+unsafe fn string valueOf(Element el)
+{
+    Optional<string> v = el.value();
+    return match (v) { case None: ""; case Some(value: s): copy s; };
+}
+
+// Two of a control's values, the same? A range's as numbers: its value reads back as `%f` text, a Change carries a float.
+fn bool sameValue(bool range, const ref string a, const ref string b)
+{
+    if (!range) { return a == b; }
+    Result<float32, ParseError> x = parse::<float32>(s: a);
+    Result<float32, ParseError> y = parse::<float32>(s: b);
+    float32 fx = 0.0;
+    float32 fy = 0.0;
+    match (x) { case Err(error: e): { return false; } case Ok(value: f): { fx = f; } };
+    match (y) { case Err(error: e): { return false; } case Ok(value: f): { fy = f; } };
+    return fx == fy;
+}
+
+// A measured control as it was made — loaded, or inserted by a rewrite or an append — is what its first Commit is
+// measured against. Once: a control `dress` sees again keeps its own.
+unsafe fn void measureFrom(Element el)
+{
+    if (!measured(el: el)) { return; }
+    string committed = "data-kama-ui-committed";
+    Optional<string> was = el.attribute(name: committed);
+    bool has = match (was) { case None: false; case Some(value: s): true; };
+    if (has) { return; }
+    string now = valueOf(el: el);
+    el.setAttributeQuietly(name: committed, value: now);
+}
+
+// The program wrote a measured control's value. With no edit pending, what it wrote is the measure: a value the program
+// put there is not one the person chose, so leaving it is no Commit. With one pending, the edit stays pending — at the
+// value now — so a field the program normalises as it is typed still commits when it is left.
+unsafe fn void wrote(Element el)
+{
+    if (!measured(el: el)) { return; }
+    string now = valueOf(el: el);
+    string edited = "data-kama-ui-edited";
+    Optional<string> pending = el.attribute(name: edited);
+    match (pending) {
+        case None: { el.setAttributeQuietly(name: "data-kama-ui-committed", value: now); }
+        case Some(value: s): { el.setAttributeQuietly(name: edited, value: now); }
+    };
+}
+
+// Is a Commit due for a measured control: an edit pending whose value differs from the last Commit's? Either way the edit
+// is no longer pending, and when it is due its value becomes the measure.
+unsafe fn bool commitDue(Element el)
+{
+    string edited = "data-kama-ui-edited";
+    string committed = "data-kama-ui-committed";
+    Optional<string> pending = el.attribute(name: edited);
+    string value = "";
+    match (pending) { case None: { return false; } case Some(value: s): { value = copy s; } };
+    el.removeAttributeQuietly(name: edited);
+    Optional<string> last = el.attribute(name: committed);
+    bool same = match (last) { case None: false; case Some(value: s): sameValue(range: isRange(el: el), a: value, b: s); };
+    if (same) { return false; }
+    el.setAttributeQuietly(name: committed, value: value);
+    return true;
+}
+
 // The tooltip's owner: the nearest element at or above `el` with a non-empty `title`; a dead element when none has one.
 unsafe fn Element titledOf(Element el)
 {
@@ -607,6 +745,21 @@ type value UiContext implements UiHost {
     // foreign owner (std::memory), borrowed in place through `store[0]`, and taken back and dropped in `close`. null
     // while the UI has not started.
     UnsafePtr<FileStore> store;
+    // (0.6.0) The commits (host.kama, `pollEvent`), as handles into the document: the range a primary press began on,
+    // until its release (`pressed`); the Change being polled, bubbling — its control (`changeOf`), the element that heard
+    // it last (`changeAt`), and whether its first record found it no edit (`changeDropped`, which its others share); a
+    // control whose Change commits once that bubbling ends (`commitAfter`); the Commits being delivered (`commitOf`, the
+    // control, and `commitAt`, the next element up from it to ask for a binding); and the record read ahead to see that
+    // a bubbling had ended, kept for the poll after the Commits (`ahead`, while `holding`).
+    Element pressed;
+    Element changeOf;
+    Element changeAt;
+    bool changeDropped;
+    Element commitAfter;
+    Element commitOf;
+    Element commitAt;
+    Event ahead;
+    bool holding;
 
     // Start RmlUi, make a context `width` x `height` framebuffer pixels, and load `fontPath` ("" for none yet) as the
     // first face. A UI that will not start leaves `isOpen()` false, and every method then does nothing.
@@ -625,6 +778,15 @@ type value UiContext implements UiHost {
         this.pointerY = 0.0;
         this.scrollMarked = false;
         this.store = null;
+        this.pressed = Element.fromHandle(handle: 0);
+        this.changeOf = Element.fromHandle(handle: 0);
+        this.changeAt = Element.fromHandle(handle: 0);
+        this.changeDropped = false;
+        this.commitAfter = Element.fromHandle(handle: 0);
+        this.commitOf = Element.fromHandle(handle: 0);
+        this.commitAt = Element.fromHandle(handle: 0);
+        this.ahead = noEvent();
+        this.holding = false;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -646,6 +808,15 @@ type value UiContext implements UiHost {
         this.pointerY = 0.0;
         this.scrollMarked = false;
         this.store = null;
+        this.pressed = Element.fromHandle(handle: 0);
+        this.changeOf = Element.fromHandle(handle: 0);
+        this.changeAt = Element.fromHandle(handle: 0);
+        this.changeDropped = false;
+        this.commitAfter = Element.fromHandle(handle: 0);
+        this.commitOf = Element.fromHandle(handle: 0);
+        this.commitAt = Element.fromHandle(handle: 0);
+        this.ahead = noEvent();
+        this.holding = false;
         this.start(width: width, height: height, fontPath: fontPath);
     }
 
@@ -702,6 +873,11 @@ type value UiContext implements UiHost {
         this.tipQuiet = false;
         this.scrollMarked = false;
         this.store[0].documentGone();
+        this.pressed = Element.fromHandle(handle: 0);
+        this.changeOf = Element.fromHandle(handle: 0);
+        this.commitAfter = Element.fromHandle(handle: 0);
+        this.commitAt = Element.fromHandle(handle: 0);
+        this.holding = false;
     }
 
     public unsafe fn bool loadDocument(const ref string path)
@@ -737,13 +913,21 @@ type value UiContext implements UiHost {
         string dragover = "dragover";
         string dragout = "dragout";
         string dragend = "dragend";
-        // Capture: a key reaches its target's listeners after the root's, and a text field may stop it there.
+        string mousedown = "mousedown";
+        string mouseup = "mouseup";
+        string blur = "blur";
+        // Capture: a key reaches its target's listeners after the root's, and a text field may stop it there. (0.6.0) So
+        // do a press, a release and a blur, which the commits read (host.kama): the blur's comes before every binding's
+        // Blur of the same element, so its Commit can.
         Optional<Listener> l1 = root.listen(event: keydown, flags: LISTEN_CAPTURE);
         Optional<Listener> l2 = root.listen(event: scroll, flags: LISTEN_CAPTURE);
         Optional<Listener> l3 = root.listen(event: dragstart, flags: LISTEN_BUBBLE);
         Optional<Listener> l4 = root.listen(event: dragover, flags: LISTEN_BUBBLE);
         Optional<Listener> l5 = root.listen(event: dragout, flags: LISTEN_BUBBLE);
         Optional<Listener> l6 = root.listen(event: dragend, flags: LISTEN_BUBBLE);
+        Optional<Listener> l7 = root.listen(event: mousedown, flags: LISTEN_CAPTURE);
+        Optional<Listener> l8 = root.listen(event: mouseup, flags: LISTEN_CAPTURE);
+        Optional<Listener> l9 = root.listen(event: blur, flags: LISTEN_CAPTURE);
         this.makeTip();
         this.doc.show(modal: Modal::None, focus: Focus::Auto);
         return true;
@@ -765,12 +949,14 @@ type value UiContext implements UiHost {
     }
 
     // `draggable="true"` is the package's one drag markup (host.kama): RmlUi drags what its RCSS `drag` says, so each
-    // such element under `el` gets the inline property. Run over whatever markup is inserted.
+    // such element under `el` gets the inline property. Run over whatever markup is inserted. (0.6.0) And each measured
+    // control is given the value its first Commit is measured against (`measureFrom`), once.
     unsafe fn void dress(Element el)
     {
         Optional<string> d = el.attribute(name: "draggable");
         bool drags = match (d) { case None: false; case Some(value: s): s == "true"; };
         if (drags) { el.setProperty(name: "drag", value: "drag-drop"); }
+        measureFrom(el: el);
         int32 n = el.childCount();
         int32 i = 0;
         while (i < n) {
@@ -795,7 +981,7 @@ type value UiContext implements UiHost {
     public unsafe fn void setInnerRml(int32 handle, const ref string rml)
     {
         Optional<Element> e = this.bound(handle: handle);
-        match (e) { case Some(value: el): { el.setInnerRml(rml: rml); this.dress(el: el); } case None: { } };
+        match (e) { case Some(value: el): { el.setInnerRml(rml: rml); this.dress(el: el); wrote(el: el); } case None: { } };
     }
 
     public unsafe fn void setSize(int32 width, int32 height)
@@ -1225,7 +1411,7 @@ type value UiContext implements UiHost {
     {
         Optional<Element> e = this.bound(handle: handle);
         string text = "${value}";
-        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
+        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); wrote(el: el); } case None: { } };
     }
 
     // ⚠️ THROUGH THE `class` ATTRIBUTE (CHANGED in 0.2.2), as a browser's `classList` writes it. RmlUi keeps a class
@@ -1253,7 +1439,7 @@ type value UiContext implements UiHost {
         match (e) {
             case None: { }
             case Some(value: el): {
-                if (name == "value" && el.setValue(value: value, quiet: true)) { return; }
+                if (name == "value" && el.setValue(value: value, quiet: true)) { wrote(el: el); return; }
                 el.setAttributeQuietly(name: name, value: value);
                 if (name == "draggable") { el.removeProperty(name: "drag"); this.dress(el: el); }
             }
@@ -1268,7 +1454,7 @@ type value UiContext implements UiHost {
             case None: { }
             case Some(value: el): {
                 string none = "";
-                if (name == "value" && el.setValue(value: none, quiet: true)) { return; }
+                if (name == "value" && el.setValue(value: none, quiet: true)) { wrote(el: el); return; }
                 el.removeAttributeQuietly(name: name);
                 if (name == "draggable") { el.removeProperty(name: "drag"); }
             }
@@ -1297,28 +1483,170 @@ type value UiContext implements UiHost {
     public unsafe fn void setElementText(int32 handle, const ref string text)
     {
         Optional<Element> e = this.bound(handle: handle);
-        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); } case None: { } };
+        match (e) { case Some(value: el): { el.setValue(value: text, quiet: true); wrote(el: el); } case None: { } };
     }
 
     // What the bindings heard, translated (`heard`), and what the package's own listeners on the root heard (`own`):
     // a key becomes a `Key` event, the rest is the drag's classes and the tooltip's dismissal. Anything else is skipped.
+    // (0.6.0) Commits being delivered go first (`nextCommit`): they belong where they were started, before anything the
+    // queue holds after. ⚠️ A CHANGE'S COMMIT FOLLOWS ITS WHOLE BUBBLING — the control's Change, then each bound
+    // container's, then the Commits, as a browser's `change` follows its `input` — and the queue says where a bubbling
+    // ended only by what comes next: so the record after it is read ahead (`bubbles`), and held, untouched, while the
+    // Commits go out. RmlUi's last-polled parameters are still that record's when it is let go: nothing is polled between.
     public unsafe fn Optional<UiEvent> pollEvent()
     {
         if (this.ready == 0) { return Optional::None; }
         while (true) {
-            Optional<Event> next = this.ctx.pollEvent();
+            Optional<UiEvent> committed = this.nextCommit();
+            match (committed) { case Some(value: c): { return Optional::Some(value: c); } case None: { } };
+            Optional<Event> next = Optional::None;
+            if (this.holding) {
+                this.holding = false;
+                next = Optional::Some(value: this.ahead);
+            } else {
+                next = this.ctx.pollEvent();
+            }
             match (next) {
-                case None: { return this.store[0].poll(); }
+                case None: {
+                    if (!this.commitAfter.isLive()) { return this.store[0].poll(); }
+                    this.startCommit(of: this.commitAfter);
+                }
                 case Some(value: ev): {
-                    Optional<UiEvent> found = Optional::None;
-                    if (ev.binding.isNone()) { found = this.own(ev: ev); } else { found = this.heard(ev: ev); }
-                    match (found) { case Some(value: u): { return Optional::Some(value: u); } case None: { } };
+                    bool more = this.bubbles(ev: ev);
+                    if (this.commitAfter.isLive() && !more) {
+                        this.ahead = ev;
+                        this.holding = true;
+                        this.startCommit(of: this.commitAfter);
+                    } else {
+                        if (!more) { this.changeOf = Element.fromHandle(handle: 0); }
+                        Optional<UiEvent> found = Optional::None;
+                        if (ev.binding.isNone()) { found = this.own(ev: ev); } else { found = this.heard(ev: ev, more: more); }
+                        match (found) { case Some(value: u): { return Optional::Some(value: u); } case None: { } };
+                    }
                 }
             };
         }
     }
 
-    unsafe fn Optional<UiEvent> heard(Event ev)
+    // ---- 0.6.0: commits (host.kama, `pollEvent`; the rules above `isRange`) ----
+
+    // Deliver a Commit for `of`: one per binding from it up, as its Change bubbled, starting at the next poll.
+    unsafe fn void startCommit(Element of)
+    {
+        this.commitAfter = Element.fromHandle(handle: 0);
+        this.commitOf = of;
+        this.commitAt = of;
+    }
+
+    // The next Commit being delivered: the next element from `commitAt` up with a binding that listens (`bindElement`'s,
+    // not `findElement`'s, which hears nothing), named as `targetOf` names a Change's target. None once past the root.
+    unsafe fn Optional<UiEvent> nextCommit()
+    {
+        while (this.commitAt.isLive()) {
+            Element at = this.commitAt;
+            Optional<Element> up = at.parent();
+            this.commitAt = match (up) { case None: Element.fromHandle(handle: 0); case Some(value: p): p; };
+            Optional<Binding> b = this.doc.bindingOf(element: at);
+            int32 element = match (b) { case None: 0; case Some(value: x): x.handle(); };
+            if (element != 0 && this.store[0].listens(binding: element)) {
+                int32 target = this.targetFrom(at: this.commitOf, stop: at);
+                return Optional::Some(value: UiEvent.make(kind: UiEventKind::Commit, element: element, target: target,
+                                                          source: 0, key: 0, mods: 0, files: 0, atX: 0.0, atY: 0.0));
+            }
+        }
+        return Optional::None;
+    }
+
+    // Does `ev` carry on the Change being polled (`changeOf`) — the same Change of the same control, heard by a binding
+    // further up than the last that heard it? Anything else ends that bubbling: another kind of record, another control,
+    // or the same control's NEXT Change, which starts again at the innermost binding (two key steps in a frame).
+    unsafe fn bool bubbles(Event ev)
+    {
+        bool change = match (ev.type) { case Change: true; case _: false; };
+        if (!change || ev.binding.isNone() || !ev.target.same(other: this.changeOf)) { return false; }
+        Optional<Element> first = this.changeAt.parent();
+        Element at = match (first) { case None: Element.fromHandle(handle: 0); case Some(value: p): p; };
+        while (at.isLive()) {
+            if (at.same(other: ev.element)) { return true; }
+            Optional<Element> up = at.parent();
+            at = match (up) { case None: Element.fromHandle(handle: 0); case Some(value: p): p; };
+        }
+        return false;
+    }
+
+    // A person's edit — the first record of its Change's bubbling — and what it means for a Commit. A measured control
+    // notes the value the Change carries; a range NOT being pressed was stepped by a key, and commits once its Change has
+    // bubbled, when the step left it where its last Commit did not; a text control waits for its ENTER or its blur.
+    // Anything else (a checkbox, a radio, a select) commits with every Change: each edit is its own commit.
+    unsafe fn void edit(Event ev)
+    {
+        Element el = ev.target;
+        if (measured(el: el)) {
+            this.noteEdit(el: el);
+            if (!isRange(el: el) || el.same(other: this.pressed) || !commitDue(el: el)) { return; }
+        }
+        this.commitAfter = el;
+    }
+
+    // The value the polled Change carries, as the edit pending (the rules above `isRange`): a range's as a float, exactly
+    // (its text parameter is rounded to three places), a text control's as its text.
+    unsafe fn void noteEdit(Element el)
+    {
+        string name = "value";
+        Optional<string> carried = this.lib.eventString(name: name);
+        string value = match (carried) { case None: valueOf(el: el); case Some(value: s): copy s; };
+        if (isRange(el: el)) {
+            bool has = match (carried) { case None: false; case Some(value: s): true; };
+            if (has) {
+                float32 f = this.lib.eventFloat(name: name, fallback: 0.0);
+                value = "${f}";
+            }
+        }
+        string edited = "data-kama-ui-edited";
+        el.setAttributeQuietly(name: edited, value: value);
+    }
+
+    // A range's Change that moves it less than a ten-thousandth of its step from where it was as of this poll (`notAnEdit`):
+    // its edit pending's value, else its last Commit's. A range with neither known moved, whatever it carries.
+    unsafe fn bool resnapped(Element el)
+    {
+        string edited = "data-kama-ui-edited";
+        string committed = "data-kama-ui-committed";
+        Optional<string> pending = el.attribute(name: edited);
+        Optional<string> last = el.attribute(name: committed);
+        string was = match (pending) { case Some(value: s): copy s; case None: match (last) { case Some(value: c): copy c; case None: ""; }; };
+        Result<float32, ParseError> parsed = parse::<float32>(s: was);
+        float32 before = 0.0;
+        match (parsed) { case Err(error: e): { return false; } case Ok(value: f): { before = f; } };
+        string stepName = "step";
+        Optional<string> stepText = el.attribute(name: stepName);
+        float32 step = 1.0;
+        match (stepText) {
+            case None: { }
+            case Some(value: t): {
+                Result<float32, ParseError> st = parse::<float32>(s: t);
+                match (st) { case Err(error: e): { } case Ok(value: f): { if (f > 0.0) { step = f; } } };
+            }
+        };
+        string name = "value";
+        Optional<string> carried = this.lib.eventString(name: name);
+        bool has = match (carried) { case None: false; case Some(value: c): true; };
+        if (!has) { return false; }
+        float32 now = this.lib.eventFloat(name: name, fallback: before);
+        float32 moved = now - before;
+        if (moved < 0.0) { moved = 0.0 - moved; }
+        return moved < step * 0.0001;
+    }
+
+    // The pressed range let go: its Commit, when the press or the drag left it changed.
+    unsafe fn void release()
+    {
+        Element was = this.pressed;
+        this.pressed = Element.fromHandle(handle: 0);
+        if (was.isLive() && commitDue(el: was)) { this.startCommit(of: was); }
+    }
+
+    unsafe fn Optional<UiEvent> heard(Event ev, bool more)
     {
         int32 element = ev.binding.handle();
         int32 mods = uiMods(m: this.lib.eventModifiers());
@@ -1328,7 +1656,19 @@ type value UiContext implements UiHost {
             case Dblclick: Optional::Some(value: UiEvent.make(kind: UiEventKind::DoubleClick, element: element,
                                                                target: this.targetOf(ev: ev), source: 0, key: 0, mods: mods, files: 0, atX: 0.0, atY: 0.0));
             case Change: {
-                if (this.notAnEdit(ev: ev)) { return Optional::None; }
+                // (0.6.0) The FIRST binding to hear a Change judges it — no edit (`notAnEdit`), or an edit and what it
+                // means for a Commit (`edit`) — and the rest of its bubbling share that: what the first record changed
+                // (a range's noted value) must not be judged again by the second.
+                if (more) {
+                    this.changeAt = ev.element;
+                    if (this.changeDropped) { return Optional::None; }
+                } else {
+                    this.changeOf = ev.target;
+                    this.changeAt = ev.element;
+                    this.changeDropped = this.notAnEdit(ev: ev);
+                    if (this.changeDropped) { return Optional::None; }
+                    this.edit(ev: ev);
+                }
                 := Optional::Some(value: UiEvent.make(kind: UiEventKind::Change, element: element,
                                                        target: this.targetOf(ev: ev), source: 0, key: 0, mods: 0, files: 0, atX: 0.0, atY: 0.0));
             }
@@ -1373,6 +1713,12 @@ type value UiContext implements UiHost {
                 string identifier = "key_identifier";
                 int32 key = uiKey(k: this.lib.eventInt(name: identifier, fallback: -1));
                 int32 mods = uiMods(m: this.lib.eventModifiers());
+                // (0.6.0) ENTER commits a text field's pending edit, after its Key (a textarea's ENTER types a line). The
+                // field reads it after the root, so the edit pending is every character typed before it.
+                if (key == UI_KEY_ENTER) {
+                    Element field = fieldOf(el: ev.target);
+                    if (field.isLive() && commitDue(el: field)) { this.startCommit(of: field); }
+                }
                 if (!reported(key: key, mods: mods)) { return Optional::None; }
                 return Optional::Some(value: UiEvent.make(kind: UiEventKind::Key, element: 0,
                                                           target: this.targetOf(ev: ev), source: 0, key: key, mods: mods, files: 0, atX: 0.0, atY: 0.0));
@@ -1405,6 +1751,25 @@ type value UiContext implements UiHost {
                 match (dragged) { case None: { } case Some(value: d): { classOn(el: d, name: dragging, on: false); } };
                 this.clearClass(name: dragging, except: Element.fromHandle(handle: 0));
                 this.clearClass(name: dropTarget, except: Element.fromHandle(handle: 0));
+                // (0.6.0) A dragged range's bar let go where nothing was under the pointer to hear a `mouseup`.
+                this.release();
+            }
+            // (0.6.0) A primary press on a range — its track, bar or arrows — holds its Commit to the release, wherever the
+            // pointer is then (a press whose release never came is let go first). A text control's blur commits its
+            // pending edit, read here before any binding's Blur of it.
+            case Mousedown: {
+                string button = "button";
+                if (this.lib.eventInt(name: button, fallback: -1) == 0) {
+                    this.release();
+                    this.pressed = rangeOf(el: ev.target);
+                }
+            }
+            case Mouseup: {
+                string button = "button";
+                if (this.lib.eventInt(name: button, fallback: -1) == 0) { this.release(); }
+            }
+            case Blur: {
+                if (liveText(el: ev.target) && commitDue(el: ev.target)) { this.startCommit(of: ev.target); }
             }
             case _: { }
         };
@@ -1457,13 +1822,22 @@ type value UiContext implements UiHost {
 
     // ⚠️ ONE CHANGE PER EDIT (host.kama), the count the web leg gets by hearing `input` from a text field, a textarea and
     // a range and `change` from everything else. RmlUi raises two Changes that are no person's edit: ENTER in a text
-    // field (`linebreak` — a commit, which the web counts as nothing either) and the radio a choice UNCHECKS (its
-    // neighbour's side effect; a browser raises nothing on it). Read from the event's own parameters, which are this
+    // field (`linebreak` — a commit, which is no Change on the web either; its Commit, 0.6.0, comes from the root's
+    // `keydown`, `own`) and the radio a choice UNCHECKS (its neighbour's side effect; a browser raises nothing on it). Read from the event's own parameters, which are this
     // poll's until the next.
+    //
+    // FIXED (0.6.0): and a range's RE-SNAP. After a movement RmlUi's slider writes its new value to the `value` attribute,
+    // reads it back snapped to its step (`min + round((v - min) / step) * step`, WidgetSlider::SetValue) — a float's
+    // width from the value it wrote, as often as not — and moves there, raising a second Change for a movement nobody
+    // made. @kama/rmlui drops a Change of no movement only when its value is EXACTLY the range's, so this one reached the
+    // queue: two Changes for one step of a drag, where a browser raises one (the 0.6.0 drag tests found it). It is told
+    // by the value the range had as of this poll — the last Change polled for it (its edit pending), else its last
+    // Commit's — and a move of less than a ten-thousandth of a step is none.
     unsafe fn bool notAnEdit(Event ev)
     {
         string linebreak = "linebreak";
         if (this.lib.eventInt(name: linebreak, fallback: 0) != 0) { return true; }
+        if (isRange(el: ev.target) && this.resnapped(el: ev.target)) { return true; }
         string checkedName = "checked";
         if (this.lib.eventInt(name: checkedName, fallback: 1) != 0) { return false; }
         if (ev.target.tag() != "input") { return false; }
@@ -1475,15 +1849,18 @@ type value UiContext implements UiHost {
     // binding for that id — the handle `bindElement` returns, named here as `findElement` names it. The walk happens at
     // the poll, over handles that read as dead once their element is gone, so a target a rewrite destroyed is 0 (the
     // web leg makes the same check at the same moment).
-    unsafe fn int32 targetOf(Event ev)
+    unsafe fn int32 targetOf(Event ev) { return this.targetFrom(at: ev.target, stop: ev.element); }
+
+    // The same walk from `from` to `stop`, for an event the package makes (0.6.0, a Commit).
+    unsafe fn int32 targetFrom(Element at, Element stop)
     {
-        Element at = ev.target;
-        while (at.isLive()) {
-            string id = at.id();
+        Element n = at;
+        while (n.isLive()) {
+            string id = n.id();
             if (!id.isEmpty()) { return this.findElement(elementId: id); }
-            if (at.same(other: ev.element)) { return 0; }
-            Optional<Element> up = at.parent();
-            match (up) { case None: { return 0; } case Some(value: p): { at = p; } };
+            if (n.same(other: stop)) { return 0; }
+            Optional<Element> up = n.parent();
+            match (up) { case None: { return 0; } case Some(value: p): { n = p; } };
         }
         return 0;
     }

@@ -6,7 +6,7 @@ file @compileFor(ARCH_WASM32);
 // the clipboard, titles, and the verdict written where a headless browser's --dump-dom reads it.
 
 import {
-    Tally, check, section, Seen, collect, changesOn,
+    Tally, check, section, Seen, collect, changesOn, editsOn,
     core::println,
     ui::UiContext, ui::UiRect, ui::UiEvent, ui::UiEventKind,
     ui::UI_KEY_S, ui::UI_KEY_P, ui::UI_MOD_CTRL,
@@ -14,7 +14,7 @@ import {
 };
 export {
     fontPath, injectClick, injectModClick, injectDoubleClick, injectKey, injectHover, injectScroll, dragBegin, dragEnd,
-    typeInto, pick, legTests, pageLegTests, report,
+    typeInto, pick, legTests, pageLegTests, report, slideRange, pressTrack, eraseIn,
     dropTestFiles, allowChooser, answerChooser, pasteTestFiles, spySaves, savedAs, fileLegChecks, playsMedia,
 };
 
@@ -35,8 +35,10 @@ extern fn int32 kama_ui_test_fire_held();
 extern fn void  kama_ui_test_window(UnsafePtr<float32> width, UnsafePtr<float32> height);
 extern fn int32 kama_ui_test_stage_is_page();
 extern fn int32 kama_ui_test_type(UnsafeConstPtr<cchar> id, UnsafeConstPtr<cchar> text);
+extern fn int32 kama_ui_test_backspace(UnsafeConstPtr<cchar> id);
 extern fn int32 kama_ui_test_pick(UnsafeConstPtr<cchar> select_id, UnsafeConstPtr<cchar> option_id);
-extern fn int32 kama_ui_test_drag(UnsafeConstPtr<cchar> id, int32 steps);
+extern fn int32 kama_ui_test_drag(UnsafeConstPtr<cchar> id, int32 steps, int32 back);
+extern fn int32 kama_ui_test_track(UnsafeConstPtr<cchar> id, int32 steps);
 extern fn int32 kama_ui_test_select(UnsafeConstPtr<cchar> id);
 extern fn int32 kama_ui_test_selection_holds(UnsafeConstPtr<cchar> id);
 // 0.4.0: files (kama_ui_test.h).
@@ -114,19 +116,39 @@ unsafe fn bool injectScroll(ref UiContext ui, float32 x, float32 y, float32 notc
     return kama_ui_test_scroll_at(x: x, y: y, notches: notches) != 0;
 }
 
-// A browser types into its own field and reports it, so these fire what it would: an `input` per character and the
-// `change` of the field letting go; the option selected, then `input` and `change`.
+// A browser types into its own field and reports it, so these fire what it would: the field focused, then an `input`
+// per character (CHANGED in 0.6.0: no `change`, which a browser fires only as the field is let go); the option
+// selected, then `input` and `change`.
 unsafe fn void typeInto(ref UiContext ui, const ref string id, const ref string text)
 {
     kama_ui_test_type(id: id.cstr(), text: text.cstr());
 }
 
-unsafe fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId)
+// (0.6.0) Backspace at the end of the field: the character gone and its `input` (a synthetic key deletes nothing).
+unsafe fn void eraseIn(ref UiContext ui, const ref string id) { kama_ui_test_backspace(id: id.cstr()); }
+
+// (0.6.0) A range's thumb dragged `steps` of its own steps down (and with `back`, as many up again) and let go, and a
+// press on its track `steps` steps up from the thumb (0: on the thumb), as a browser reports each (kama_ui_test.h).
+// `by`, the step as a fraction of the range, is for the native leg, which aims its pointer by it: a browser steps by
+// the range's own `step`.
+unsafe fn bool slideRange(ref UiContext ui, const ref string id, float32 by, int32 steps, bool back)
+{
+    int32 b = 0;
+    if (back) { b = 1; }
+    return kama_ui_test_drag(id: id.cstr(), steps: steps, back: b) != 0;
+}
+
+unsafe fn bool pressTrack(ref UiContext ui, const ref string id, float32 by, int32 steps)
+{
+    return kama_ui_test_track(id: id.cstr(), steps: steps) != 0;
+}
+
+// `index`, the option's place, is the native leg's, which aims its click by it.
+unsafe fn void pick(ref UiContext ui, const ref string selectId, const ref string optionId, int32 index)
 {
     kama_ui_test_pick(select_id: selectId.cstr(), option_id: optionId.cstr());
 }
 
-unsafe fn bool drag(const ref string id, int32 steps) { return kama_ui_test_drag(id: id.cstr(), steps: steps) != 0; }
 
 unsafe fn bool hold(const ref string id) { return kama_ui_test_hold(id: id.cstr()) != 0; }
 unsafe fn bool fireHeld() { return kama_ui_test_fire_held() != 0; }
@@ -171,12 +193,14 @@ fn void legTests(ref Tally t, ref UiContext ui, int32 first, int32 field)
     ui.setElementAttribute(handle: pic, name: "src", value: "/img/dot2.pam");
     check(t: t, ok: attrEnds(id: "pic", attr: "src", suffix: "/img/dot2.webp"), what: "an `src` written as an attribute is rewritten too");
 
-    section(what: "web: a slider's release is no edit");
+    section(what: "web: a slider's release is no edit, but a Commit (CHANGED in 0.6.0)");
     int32 level = ui.bindElement(elementId: "level");
     collect(ui: ui);
-    check(t: t, ok: drag(id: "level", steps: 2), what: "the range is dragged two steps and let go");
-    int32 dragged = changesOn(ui: ui, handle: level);
-    check(t: t, ok: dragged == 2, what: "...two changes, live, and none for the release (${dragged})");
+    check(t: t, ok: slideRange(ui: ui, id: "level", by: 0.05, steps: 2, back: false),
+          what: "the range is dragged two steps and let go");
+    string dragged = editsOn(ui: ui, handle: level);
+    check(t: t, ok: dragged == "Change,Change,Commit",
+          what: "...two changes, live, and for the release a Commit, not a Change ('${dragged}')");
 
     section(what: "web: what a rewrite or a new document lets go of hears nothing");
     int32 list = ui.bindElement(elementId: "list");

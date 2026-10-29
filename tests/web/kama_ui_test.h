@@ -41,11 +41,16 @@ extern void kama_ui_test_window(float* width, float* height);
 // 1 when #ui-stage is a page's: pinned to the four edges with no size of its own, unscaled, shown, the window's size.
 extern int32_t kama_ui_test_stage_is_page(void);
 // What a browser reports for a person's edit, fired at the element with this id (a synthetic key types nothing):
-// typing is an `input` per character then the `change` of the field letting go; picking selects the option, then
-// `input` and `change`; a drag is an `input` per step then the `change` of the release. 1 when the element exists.
+// typing is the focus, then an `input` per character (CHANGED in 0.6.0: the field focused first, and no `change`,
+// which a browser fires only as the field is let go); a backspace takes the last character, with its `input`; picking
+// selects the option, then `input` and `change`; a drag is the press, an `input` per step down (and with `back` as many
+// up again), then the release with its `change` and click; a press on the track `steps` steps up from the thumb is the
+// press, the jump with its `input` (none for 0), then the release, `change` and click. 1 when the element exists.
 extern int32_t kama_ui_test_type(const char* id, const char* text);
+extern int32_t kama_ui_test_backspace(const char* id);
 extern int32_t kama_ui_test_pick(const char* select_id, const char* option_id);
-extern int32_t kama_ui_test_drag(const char* id, int32_t steps);
+extern int32_t kama_ui_test_drag(const char* id, int32_t steps, int32_t back);
+extern int32_t kama_ui_test_track(const char* id, int32_t steps);
 // Select the text inside the element with this id, as a person's drag would. 1 when it exists.
 extern int32_t kama_ui_test_select(const char* id);
 // 1 when the page's selection is still that text: not collapsed, its nodes still in the document and inside the element.

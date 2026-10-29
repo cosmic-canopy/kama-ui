@@ -112,6 +112,7 @@ fn UiEventKind kindOf(int32 raw)
     if (raw == 9) { return UiEventKind::Paste; }
     if (raw == 10) { return UiEventKind::Read; }
     if (raw == 11) { return UiEventKind::Media; }
+    if (raw == 12) { return UiEventKind::Commit; }
     return UiEventKind::None;
 }
 

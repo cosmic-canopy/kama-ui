@@ -5,6 +5,60 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — not yet published
+
+A `Commit` event: the person done with a control's value, beside the Changes on the way, the same on both legs and in
+the same order. Every Change is as before, but for one native fix: a drag's step is one Change, not two (Fixed).
+Needs **kama ≥ 0.9.758**, unchanged, and tested with kama 0.9.765. Built on @kama/rmlui 0.2.0, unchanged.
+
+### Breaking
+
+- `UiEventKind` gains `Commit`. A `match` on it needs the new arm.
+
+### Added
+
+- **`Commit`** (host.kama, `pollEvent`), for a program that wants the value a person settled on rather than every
+  value on the way: a field saved as it is left, one undo step per drag. It names the control as its `target`, as a
+  Change does, reaches the same bindings in the same order (the control's, then each bound container's), and carries
+  no value: the last Change did, so read it (`elementValue`, `elementText`, `elementChecked`). It comes:
+  - for a range, as it is let go — a drag of its bar, a press on its track, wherever the pointer is then — and at each
+    step of a key, after that step's Change;
+  - for a text field (any `<input>` a person types into), at ENTER after its Key, and as it loses the focus, before
+    that Blur (a browser's `change` comes before its `focusout`);
+  - for a textarea, as it loses the focus, before the Blur (its ENTER types a line);
+  - for a checkbox, a radio and a `<select>`, after each Change: each edit is its own commit. The radio a choice
+    unchecks raises nothing, as before.
+  - Only when the value changed since the control's last Commit: a drag that ends where it began, a key past either
+    end, or a character typed and erased, then left, is none. It is measured against the value at the last Commit,
+    else as the control was loaded or inserted — or as the program last wrote it while the person had no edit pending
+    (a value the program put there is not one the person chose). A write over a pending edit (a field normalised as it
+    is typed) leaves it pending, so its Commit still comes. A program's writes raise no event of either kind.
+  - Natively RmlUi has no such event, so it is made at the poll, in the order of what caused it: the root's own
+    `mousedown`, `mouseup`, `keydown` and `blur` (capture), and the Changes the bindings hear. A Change's Commit
+    follows the whole of its bubbling, which the poll learns by reading the next record ahead. What each control was
+    last committed at, and the value of an edit pending, live on the control as two quiet attributes
+    (`data-kama-ui-committed`, `data-kama-ui-edited`). On the web the measure is the control's own (`__kamaUiCommitted`,
+    `__kamaUiDirty`); a range's `change` is its Commit, and a text control's is ENTER (`keydown`) and the blur
+    (`focusout`), read by the package rather than taken from the browser's `change`, which Firefox and Chrome fire
+    differently after a script's write. The package's own key step of a focused range (`key`) now fires `change` after
+    its `input`, as a browser's does.
+
+### Fixed
+
+- **A range's drag raises one Change per step natively**, as on the web. After a movement RmlUi's slider writes its
+  value, reads it back snapped to its step — a float's width away, as often as not — and moves there, raising a second
+  Change that @kama/rmlui's exact comparison let through: two Changes for one step. A Change that moves a range less
+  than a ten-thousandth of its step from where it was (as of the poll) is now no edit. Found by the drag tests above.
+
+### Tests
+
+- The native `pick` aims at the option by its place in the box, laid out by a render below the select: RmlUi keeps a
+  select's options out of the DOM, so `findElement` finds none, and the click at its empty rect landed on the last
+  option of a box not laid out yet, whichever was asked. The seam fixture gives scrollbars a width, since an unstyled
+  one spans the select's box over the options. The web's typing focuses the field and fires no `change` (a browser
+  fires it only as a field is let go), and its range drag is a browser's whole sequence (press, steps, release,
+  `change`, click).
+
 ## [0.5.2] — 2026-10-29
 
 Builds on kama 0.9.758, no change to what it does. Needs **kama ≥ 0.9.758**, up from 0.9.577. Built on @kama/rmlui
