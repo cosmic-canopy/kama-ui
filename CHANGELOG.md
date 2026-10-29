@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.6.0] — not yet published
+## [0.6.0] — 2026-10-29
 
 A `Commit` event: the person done with a control's value, beside the Changes on the way, the same on both legs and in
 the same order. Every Change is as before, but for one native fix: a drag's step is one Change, not two (Fixed).

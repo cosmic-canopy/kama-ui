@@ -11,7 +11,7 @@ The program writes `ui::UiContext` and never knows which backend it has. Each bu
 `web.kama` declare `UiContext` under complementary `@compileFor` gates, and both are checked against the `UiHost`
 contract where they are written.
 
-> **Status: 0.6.0, not yet published** (0.5.2 is on registry.kama-lang.org, 2026-10-29): the `Commit` event. Needs
+> **Status: published** (registry.kama-lang.org, 0.6.0 on 2026-10-29): the `Commit` event. Needs
 > **kama ≥ 0.9.758**; tested with 0.9.765. Tested natively on Linux x86_64 (debug, release and AddressSanitizer) and in
 > headless Firefox 157 (emcc 6.0.9).
 
